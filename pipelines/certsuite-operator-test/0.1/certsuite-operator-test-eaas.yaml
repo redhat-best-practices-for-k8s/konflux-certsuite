@@ -134,17 +134,7 @@ spec:
         - input: "$(tasks.get-unreleased-bundle.results.unreleasedBundle)"
           operator: notin
           values: [""]
-      params:
-        - name: SNAPSHOT
-          value: $(params.SNAPSHOT)
-        - name: UNRELEASED_BUNDLE
-          value: "$(tasks.get-unreleased-bundle.results.unreleasedBundle)"
       taskSpec:
-        params:
-          - name: SNAPSHOT
-            type: string
-          - name: UNRELEASED_BUNDLE
-            type: string
         results:
           - name: ocpVersion
             value: "$(steps.pick-cluster-version.results.ocpVersion)"
@@ -179,35 +169,6 @@ spec:
                 value: "$(tasks.parse-metadata.results.component-container-image)"
               - name: clusterVersions
                 value: ["$(steps.get-supported-versions.results.versions[*])"]
-          - name: resolve-bundle-image
-            image: quay.io/konflux-ci/konflux-test:v1.4.31@sha256:a7cae9e96663e277a3904d0c78630508ddb6cc8eebaa912a840bd20f68dcaad1
-            results:
-              - name: resolvedImage
-            env:
-              - name: SNAPSHOT
-                value: "$(params.SNAPSHOT)"
-              - name: UNRELEASED_BUNDLE
-                value: "$(params.UNRELEASED_BUNDLE)"
-            script: |
-              #!/usr/bin/env bash
-              set -euo pipefail
-
-              # Extract digest from the registry.redhat.io bundle reference
-              DIGEST="${UNRELEASED_BUNDLE##*@}"
-
-              # Find the matching component in the SNAPSHOT by digest
-              RESOLVED=$(echo "${SNAPSHOT}" | jq -r \
-                --arg digest "${DIGEST}" \
-                '.components[] | select(.containerImage | endswith($digest)) | .containerImage' | head -1)
-
-              if [[ -n "${RESOLVED}" ]]; then
-                echo "[$(date -u +%FT%T.%3NZ)] Resolved bundle image: ${RESOLVED}"
-              else
-                echo "[$(date -u +%FT%T.%3NZ)] No matching component in SNAPSHOT, using original: ${UNRELEASED_BUNDLE}"
-                RESOLVED="${UNRELEASED_BUNDLE}"
-              fi
-
-              echo -n "${RESOLVED}" > $(step.results.resolvedImage.path)
           - name: pick-cluster-arch
             ref:
               resolver: git
@@ -220,7 +181,7 @@ spec:
                   value: stepactions/bundles/pick-cluster-arch/0.1/pick-cluster-arch.yaml
             params:
               - name: bundleImage
-                value: "$(steps.resolve-bundle-image.results.resolvedImage)"
+                value: "$(tasks.parse-metadata.results.component-container-image)"
 
     # ── 5. Provision Ephemeral Cluster ─────────────────────────────────
     - name: provision-cluster
