@@ -479,6 +479,30 @@ spec:
               fi
 
               CSV_NAME=$(grep -m1 '^  name:' "${CSV_FILE}" | awk '{print $2}')
+
+              # Use namespace from CSV if it specifies one
+              CSV_NS=$(grep -m1 '^  namespace:' "${CSV_FILE}" | awk '{print $2}')
+              if [[ -n "${CSV_NS}" && "${CSV_NS}" != "${INSTALL_NAMESPACE}" ]]; then
+                echo "[$(date -u +%FT%T.%3NZ)] CSV specifies namespace '${CSV_NS}', using that instead of '${INSTALL_NAMESPACE}'"
+                INSTALL_NAMESPACE="${CSV_NS}"
+                oc create namespace "${INSTALL_NAMESPACE}" 2>/dev/null || true
+                echo -n "${INSTALL_NAMESPACE}" > /workspace/install-namespace
+
+                # Ensure OperatorGroup exists in the correct namespace
+                EXISTING_OG=$(oc -n "${INSTALL_NAMESPACE}" get operatorgroup -o jsonpath="{.items[*].metadata.name}" 2>/dev/null || true)
+                if [[ -z "${EXISTING_OG}" ]]; then
+                  oc create -f - <<OG2_EOF
+              apiVersion: operators.coreos.com/v1
+              kind: OperatorGroup
+              metadata:
+                generateName: oo-
+                namespace: ${INSTALL_NAMESPACE}
+              spec:
+                targetNamespaces: []
+              OG2_EOF
+                fi
+              fi
+
               echo "[$(date -u +%FT%T.%3NZ)] Applying CSV '${CSV_NAME}' to namespace ${INSTALL_NAMESPACE}..."
               oc apply -n "${INSTALL_NAMESPACE}" -f "${CSV_FILE}" 2>&1
 
