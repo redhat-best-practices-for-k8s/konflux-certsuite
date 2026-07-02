@@ -511,9 +511,10 @@ spec:
                 sed -i '/minKubeVersion/d' "${CSV_FILE}"
               fi
 
-              # Pre-create ServiceAccounts referenced in the CSV
+              # Pre-create ServiceAccounts and grant cluster-admin (OLM requires RBAC to be present)
               for SA in $(grep 'serviceAccountName:' "${CSV_FILE}" | awk '{print $2}' | sort -u); do
                 oc create serviceaccount "${SA}" -n "${INSTALL_NAMESPACE}" 2>/dev/null || true
+                oc adm policy add-cluster-role-to-user cluster-admin -z "${SA}" -n "${INSTALL_NAMESPACE}" 2>/dev/null || true
               done
 
               echo "[$(date -u +%FT%T.%3NZ)] Applying CSV '${CSV_NAME}' to namespace ${INSTALL_NAMESPACE}..."
@@ -633,6 +634,9 @@ spec:
               #!/usr/bin/env bash
               set -euo pipefail
 
+              # Force certsuite to use KUBECONFIG instead of in-cluster config
+              unset KUBERNETES_SERVICE_HOST KUBERNETES_SERVICE_PORT
+
               # Verify kubeconfig is accessible
               echo "[$(date -u +%FT%T.%3NZ)] KUBECONFIG=${KUBECONFIG}"
               if [[ ! -f "${KUBECONFIG}" ]]; then
@@ -640,7 +644,8 @@ spec:
                 ls -la /credentials/ >&2
                 exit 1
               fi
-              echo "[$(date -u +%FT%T.%3NZ)] Connected as: $(oc whoami 2>/dev/null || echo 'UNKNOWN')"
+              echo "[$(date -u +%FT%T.%3NZ)] Testing cluster access..."
+              kubectl --kubeconfig="${KUBECONFIG}" cluster-info 2>&1 | head -2 || true
 
               RESULTS_DIR="/workspace/results"
               CONFIG_FILE="/workspace/test-bundle/certsuite_config.yml"
