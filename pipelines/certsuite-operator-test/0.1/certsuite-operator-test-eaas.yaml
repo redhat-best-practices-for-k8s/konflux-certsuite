@@ -619,15 +619,22 @@ spec:
               CONFIG_FILE="/workspace/test-bundle/certsuite_config.yml"
               mkdir -p "${RESULTS_DIR}"
 
+              # Read install namespace from deploy-operator step
+              INSTALL_NS=""
+              [[ -f /workspace/install-namespace ]] && INSTALL_NS=$(cat /workspace/install-namespace)
+
               if [[ ! -f "${CONFIG_FILE}" ]]; then
-                echo "WARNING: No certsuite_config.yml in test bundle. Using default."
-                CONFIG_FILE=""
+                echo "[$(date -u +%FT%T.%3NZ)] No certsuite_config.yml in test bundle, generating minimal config..."
+                CONFIG_FILE="/workspace/certsuite_config.yml"
+                cat > "${CONFIG_FILE}" <<CFG_EOF
+              targetNameSpaces:
+                - name: "${INSTALL_NS}"
+              podsUnderTestLabels:
+                - "redhat-best-practices-for-k8s.com/generic: target"
+              CFG_EOF
               fi
 
-              CONFIG_ARGS=""
-              if [[ -n "${CONFIG_FILE}" ]]; then
-                CONFIG_ARGS="--config-file ${CONFIG_FILE}"
-              fi
+              CONFIG_ARGS="--config-file ${CONFIG_FILE}"
 
               if [[ -z "${CERTSUITE_LABELS}" ]]; then
                 SUITE_DIR="${RESULTS_DIR}/all"
