@@ -337,13 +337,25 @@ spec:
               fi
 
               # Extract all bundle objects (CRDs, CSV, etc.) from the FBC
+              # Match by digest since the .image field format may differ (tag vs digest ref)
+              BUNDLE_DIGEST="${BUNDLE_IMAGE##*@}"
               BUNDLE_OBJECTS=$(echo "${bundle_render_out}" | \
-                jq -r --arg img "${BUNDLE_IMAGE}" \
-                'select(.schema == "olm.bundle" and .image == $img) | .properties[]? |
+                jq -r --arg digest "${BUNDLE_DIGEST}" \
+                'select(.schema == "olm.bundle" and (.image | contains($digest))) | .properties[]? |
                 select(.type == "olm.bundle.object") | .value.data')
 
+              # Fallback: match by package name (pick highest bundle)
               if [[ -z "${BUNDLE_OBJECTS}" ]]; then
-                echo "ERROR: No bundle objects found for image ${BUNDLE_IMAGE}" >&2
+                echo "[$(date -u +%FT%T.%3NZ)] No match by digest, trying by package name..."
+                BUNDLE_OBJECTS=$(echo "${bundle_render_out}" | \
+                  jq -r --arg pkg "${PACKAGE_NAME}" \
+                  'select(.schema == "olm.bundle" and .package == $pkg) | .properties[]? |
+                  select(.type == "olm.bundle.object") | .value.data' | tail -n +1)
+              fi
+
+              if [[ -z "${BUNDLE_OBJECTS}" ]]; then
+                echo "ERROR: No bundle objects found. Debug info:" >&2
+                echo "${bundle_render_out}" | jq -r 'select(.schema == "olm.bundle") | {name, image, package}' >&2
                 exit 1
               fi
 
