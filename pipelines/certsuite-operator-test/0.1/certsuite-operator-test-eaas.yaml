@@ -180,7 +180,7 @@ spec:
               - name: clusterVersions
                 value: ["$(steps.get-supported-versions.results.versions[*])"]
           - name: resolve-bundle-image
-            image: quay.io/openshift/origin-cli:latest
+            image: quay.io/konflux-ci/konflux-test:v1.4.31@sha256:a7cae9e96663e277a3904d0c78630508ddb6cc8eebaa912a840bd20f68dcaad1
             results:
               - name: resolvedImage
             env:
