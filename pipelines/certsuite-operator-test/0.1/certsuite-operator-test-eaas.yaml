@@ -626,12 +626,14 @@ spec:
               if [[ ! -f "${CONFIG_FILE}" ]]; then
                 echo "[$(date -u +%FT%T.%3NZ)] No certsuite_config.yml in test bundle, generating minimal config..."
                 CONFIG_FILE="/workspace/certsuite_config.yml"
-                cat > "${CONFIG_FILE}" <<CFG_EOF
-              targetNameSpaces:
-                - name: "${INSTALL_NS}"
-              podsUnderTestLabels:
-                - "redhat-best-practices-for-k8s.com/generic: target"
-              CFG_EOF
+                printf '%s\n' \
+                  "targetNameSpaces:" \
+                  "  - name: \"${INSTALL_NS}\"" \
+                  "podsUnderTestLabels:" \
+                  "  - \"redhat-best-practices-for-k8s.com/generic: target\"" \
+                  > "${CONFIG_FILE}"
+                echo "[$(date -u +%FT%T.%3NZ)] Generated config:"
+                cat "${CONFIG_FILE}"
               fi
 
               CONFIG_ARGS="--config-file ${CONFIG_FILE}"
