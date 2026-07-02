@@ -258,6 +258,8 @@ spec:
           value: $(params.TEST_BUNDLE_REF)
         - name: certsuiteLabels
           value: $(params.CERTSUITE_LABELS)
+        - name: snapshot
+          value: $(params.SNAPSHOT)
       taskSpec:
         params:
           - name: eaasSpaceSecretRef
@@ -275,6 +277,8 @@ spec:
           - name: testBundleRef
             type: string
           - name: certsuiteLabels
+            type: string
+          - name: snapshot
             type: string
         volumes:
           - name: credentials
@@ -323,6 +327,8 @@ spec:
                 value: "$(params.packageName)"
               - name: CHANNEL_NAME
                 value: "$(params.channelName)"
+              - name: SNAPSHOT
+                value: "$(params.snapshot)"
             script: |
               #!/usr/bin/env bash
               set -euo pipefail
@@ -396,6 +402,45 @@ spec:
                 [[ ${i} -eq 60 ]] && { echo "ERROR: CatalogSource not ready"; exit 1; }
                 sleep 10
               done
+
+              # Resolve quay.io mirror for the unreleased bundle image
+              BUNDLE_DIGEST="${BUNDLE_IMAGE##*@}"
+              QUAY_IMAGE=$(echo "${SNAPSHOT}" | jq -r \
+                --arg digest "${BUNDLE_DIGEST}" \
+                '.components[] | select(.containerImage | endswith($digest)) | .containerImage' | head -1)
+
+              if [[ -n "${QUAY_IMAGE}" && "${QUAY_IMAGE}" != "${BUNDLE_IMAGE}" ]]; then
+                REGISTRY_HOST="${BUNDLE_IMAGE%%/*}"
+                QUAY_HOST="${QUAY_IMAGE%%/*}"
+                REPO_PATH=$(echo "${BUNDLE_IMAGE}" | sed "s|^${REGISTRY_HOST}/||" | sed 's|@.*||')
+                QUAY_REPO_PATH=$(echo "${QUAY_IMAGE}" | sed "s|^${QUAY_HOST}/||" | sed 's|@.*||')
+
+                echo "[$(date -u +%FT%T.%3NZ)] Creating IDMS: ${REGISTRY_HOST}/${REPO_PATH} -> ${QUAY_HOST}/${QUAY_REPO_PATH}"
+                oc apply -f - <<IDMS_EOF
+              apiVersion: config.openshift.io/v1
+              kind: ImageDigestMirrorSet
+              metadata:
+                name: certsuite-bundle-mirror
+              spec:
+                imageDigestMirrors:
+                  - source: ${REGISTRY_HOST}/${REPO_PATH}
+                    mirrors:
+                      - ${QUAY_HOST}/${QUAY_REPO_PATH}
+              IDMS_EOF
+
+                echo "[$(date -u +%FT%T.%3NZ)] Waiting for MachineConfigPool to start updating..."
+                sleep 10
+                for i in $(seq 1 60); do
+                  UPDATED=$(oc get mcp worker -o jsonpath='{.status.conditions[?(@.type=="Updated")].status}' 2>/dev/null || echo "")
+                  UPDATING=$(oc get mcp worker -o jsonpath='{.status.conditions[?(@.type=="Updating")].status}' 2>/dev/null || echo "")
+                  if [[ "${UPDATED}" == "True" && "${UPDATING}" != "True" ]]; then
+                    echo "[$(date -u +%FT%T.%3NZ)] MCP updated"
+                    break
+                  fi
+                  [[ ${i} -eq 60 ]] && echo "WARNING: MCP update timed out, continuing anyway"
+                  sleep 15
+                done
+              fi
 
               # Bundle name + Subscription
               BUNDLE_NAME=$(echo "${bundle_render_out}" | jq -r --arg img "${BUNDLE_IMAGE}" 'select(.schema == "olm.bundle" and .image == $img) | .name' | head -1)
