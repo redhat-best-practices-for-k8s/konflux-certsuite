@@ -338,15 +338,40 @@ spec:
 
               # Resolve the bundle image to an accessible quay.io path
               BUNDLE_DIGEST="${BUNDLE_IMAGE##*@}"
+
+              # Try 1: Find in SNAPSHOT by digest match
               QUAY_BUNDLE=$(echo "${SNAPSHOT}" | jq -r \
                 --arg digest "${BUNDLE_DIGEST}" \
                 '.components[] | select(.containerImage | endswith($digest)) | .containerImage' | head -1)
 
+              # Try 2: Derive from FBC fragment path (same tenant, replace -fbc- with -bundle-mono-)
+              if [[ -z "${QUAY_BUNDLE}" ]]; then
+                FBC_BASE="${FBC_FRAGMENT%%@*}"
+                TENANT_AND_REPO="${FBC_BASE#quay.io/redhat-user-workloads/}"
+                TENANT="${TENANT_AND_REPO%%/*}"
+                FBC_REPO="${TENANT_AND_REPO#*/}"
+                BUNDLE_REPO=$(echo "${FBC_REPO}" | sed 's/-fbc-/-bundle-mono-/')
+
+                CANDIDATE="quay.io/redhat-user-workloads/${TENANT}/${BUNDLE_REPO}@${BUNDLE_DIGEST}"
+                echo "[$(date -u +%FT%T.%3NZ)] Trying derived path: ${CANDIDATE}"
+                if skopeo inspect --raw "docker://${CANDIDATE}" &>/dev/null; then
+                  QUAY_BUNDLE="${CANDIDATE}"
+                else
+                  # Also try without -mono-
+                  BUNDLE_REPO2=$(echo "${FBC_REPO}" | sed 's/-fbc-/-bundle-/')
+                  CANDIDATE2="quay.io/redhat-user-workloads/${TENANT}/${BUNDLE_REPO2}@${BUNDLE_DIGEST}"
+                  echo "[$(date -u +%FT%T.%3NZ)] Trying: ${CANDIDATE2}"
+                  if skopeo inspect --raw "docker://${CANDIDATE2}" &>/dev/null; then
+                    QUAY_BUNDLE="${CANDIDATE2}"
+                  fi
+                fi
+              fi
+
               if [[ -n "${QUAY_BUNDLE}" ]]; then
-                echo "[$(date -u +%FT%T.%3NZ)] Resolved bundle from SNAPSHOT: ${QUAY_BUNDLE}"
+                echo "[$(date -u +%FT%T.%3NZ)] Resolved bundle: ${QUAY_BUNDLE}"
                 RENDER_IMAGE="${QUAY_BUNDLE}"
               else
-                echo "[$(date -u +%FT%T.%3NZ)] WARNING: Bundle not found in SNAPSHOT, trying original: ${BUNDLE_IMAGE}"
+                echo "[$(date -u +%FT%T.%3NZ)] WARNING: Could not resolve quay.io bundle, trying original: ${BUNDLE_IMAGE}"
                 echo "[$(date -u +%FT%T.%3NZ)] SNAPSHOT components:"
                 echo "${SNAPSHOT}" | jq -r '.components[] | "  - \(.name): \(.containerImage)"'
                 RENDER_IMAGE="${BUNDLE_IMAGE}"
