@@ -258,6 +258,8 @@ spec:
           value: $(params.TEST_BUNDLE_REF)
         - name: certsuiteLabels
           value: $(params.CERTSUITE_LABELS)
+        - name: snapshot
+          value: $(params.SNAPSHOT)
       taskSpec:
         params:
           - name: eaasSpaceSecretRef
@@ -275,6 +277,8 @@ spec:
           - name: testBundleRef
             type: string
           - name: certsuiteLabels
+            type: string
+          - name: snapshot
             type: string
         volumes:
           - name: credentials
@@ -323,6 +327,8 @@ spec:
                 value: "$(params.packageName)"
               - name: CHANNEL_NAME
                 value: "$(params.channelName)"
+              - name: SNAPSHOT
+                value: "$(params.snapshot)"
             script: |
               #!/usr/bin/env bash
               set -euo pipefail
@@ -330,42 +336,36 @@ spec:
               echo "[$(date -u +%FT%T.%3NZ)] Deploying operator: package=${PACKAGE_NAME} channel=${CHANNEL_NAME}"
               oc whoami || { echo "ERROR: Cannot connect to cluster"; exit 1; }
 
-              echo "[$(date -u +%FT%T.%3NZ)] Rendering FBC fragment..."
-              if ! bundle_render_out=$(opm render "${FBC_FRAGMENT}"); then
-                echo "ERROR: Failed to render FBC fragment" >&2
-                exit 1
-              fi
-
-              # Extract all bundle objects (CRDs, CSV, etc.) from the FBC
-              # Match by digest since the .image field format may differ (tag vs digest ref)
+              # Resolve the bundle image to an accessible quay.io path
               BUNDLE_DIGEST="${BUNDLE_IMAGE##*@}"
-              BUNDLE_OBJECTS=$(echo "${bundle_render_out}" | \
-                jq -r --arg digest "${BUNDLE_DIGEST}" \
-                'select(.schema == "olm.bundle" and (.image | contains($digest))) | .properties[]? |
-                select(.type == "olm.bundle.object") | .value.data')
+              QUAY_BUNDLE=$(echo "${SNAPSHOT}" | jq -r \
+                --arg digest "${BUNDLE_DIGEST}" \
+                '.components[] | select(.containerImage | endswith($digest)) | .containerImage' | head -1)
 
-              # Fallback: match by package name (pick highest bundle)
-              if [[ -z "${BUNDLE_OBJECTS}" ]]; then
-                echo "[$(date -u +%FT%T.%3NZ)] No match by digest, trying by package name..."
-                BUNDLE_OBJECTS=$(echo "${bundle_render_out}" | \
-                  jq -r --arg pkg "${PACKAGE_NAME}" \
-                  'select(.schema == "olm.bundle" and .package == $pkg) | .properties[]? |
-                  select(.type == "olm.bundle.object") | .value.data' | tail -n +1)
+              if [[ -n "${QUAY_BUNDLE}" ]]; then
+                echo "[$(date -u +%FT%T.%3NZ)] Resolved bundle from SNAPSHOT: ${QUAY_BUNDLE}"
+                RENDER_IMAGE="${QUAY_BUNDLE}"
+              else
+                echo "[$(date -u +%FT%T.%3NZ)] WARNING: Bundle not found in SNAPSHOT, trying original: ${BUNDLE_IMAGE}"
+                echo "[$(date -u +%FT%T.%3NZ)] SNAPSHOT components:"
+                echo "${SNAPSHOT}" | jq -r '.components[] | "  - \(.name): \(.containerImage)"'
+                RENDER_IMAGE="${BUNDLE_IMAGE}"
               fi
 
-              if [[ -z "${BUNDLE_OBJECTS}" ]]; then
-                echo "ERROR: No bundle objects found. Debug info:" >&2
-                echo "${bundle_render_out}" | jq -r 'select(.schema == "olm.bundle") | {name, image, package}' >&2
+              echo "[$(date -u +%FT%T.%3NZ)] Rendering bundle: ${RENDER_IMAGE}"
+              if ! bundle_render_out=$(opm render "${RENDER_IMAGE}"); then
+                echo "ERROR: Failed to render bundle image" >&2
                 exit 1
               fi
 
-              # Determine install namespace from CSV
-              INSTALL_NAMESPACE=$(echo "${BUNDLE_OBJECTS}" | \
-                while IFS= read -r obj; do
-                  echo "${obj}" | base64 -d 2>/dev/null | \
-                    jq -r 'select(.kind == "ClusterServiceVersion") |
-                    .metadata.annotations["operatorframework.io/suggested-namespace"] // empty' 2>/dev/null
-                done | grep -v '^$' | head -1)
+              # Determine install namespace
+              INSTALL_NAMESPACE=$(echo "${bundle_render_out}" | \
+                jq -r 'select(.schema == "olm.bundle") | .properties[]? |
+                select(.type == "olm.bundle.object") | .value.data' 2>/dev/null | \
+                base64 -d 2>/dev/null | \
+                jq -r 'select(.kind == "ClusterServiceVersion") |
+                .metadata.annotations["operatorframework.io/suggested-namespace"] // empty' 2>/dev/null | \
+                head -1)
 
               if [[ -z "${INSTALL_NAMESPACE}" || "${INSTALL_NAMESPACE}" == "null" ]]; then
                 INSTALL_NAMESPACE=$(oc create -f - -o jsonpath='{.metadata.name}' <<NS_EOF
@@ -396,72 +396,106 @@ spec:
               OG_EOF
               fi
 
-              # Apply CRDs first, then other resources, then CSV last
-              echo "[$(date -u +%FT%T.%3NZ)] Applying bundle objects directly from FBC metadata..."
-              CRDS=""
-              CSV_OBJ=""
-              OTHER_OBJS=""
+              # Create IDMS to redirect registry.redhat.io pulls to quay.io
+              if [[ -n "${QUAY_BUNDLE}" && "${QUAY_BUNDLE}" != "${BUNDLE_IMAGE}" ]]; then
+                REGISTRY_HOST="${BUNDLE_IMAGE%%/*}"
+                QUAY_HOST="${QUAY_BUNDLE%%/*}"
+                REPO_PATH=$(echo "${BUNDLE_IMAGE}" | sed "s|^${REGISTRY_HOST}/||" | sed 's|@.*||')
+                QUAY_REPO_PATH=$(echo "${QUAY_BUNDLE}" | sed "s|^${QUAY_HOST}/||" | sed 's|@.*||')
 
-              while IFS= read -r obj_b64; do
-                [[ -z "${obj_b64}" ]] && continue
-                decoded=$(echo "${obj_b64}" | base64 -d 2>/dev/null) || continue
-                kind=$(echo "${decoded}" | jq -r '.kind // empty' 2>/dev/null) || continue
+                echo "[$(date -u +%FT%T.%3NZ)] Creating IDMS: ${REGISTRY_HOST}/${REPO_PATH} -> ${QUAY_HOST}/${QUAY_REPO_PATH}"
+                oc apply -f - <<IDMS_EOF
+              apiVersion: config.openshift.io/v1
+              kind: ImageDigestMirrorSet
+              metadata:
+                name: certsuite-bundle-mirror
+              spec:
+                imageDigestMirrors:
+                  - source: ${REGISTRY_HOST}/${REPO_PATH}
+                    mirrors:
+                      - ${QUAY_HOST}/${QUAY_REPO_PATH}
+              IDMS_EOF
 
-                case "${kind}" in
-                  CustomResourceDefinition)
-                    CRDS="${CRDS}${decoded}"$'\n---\n'
-                    ;;
-                  ClusterServiceVersion)
-                    CSV_OBJ="${decoded}"
-                    ;;
-                  *)
-                    OTHER_OBJS="${OTHER_OBJS}${decoded}"$'\n---\n'
-                    ;;
-                esac
-              done <<< "${BUNDLE_OBJECTS}"
-
-              # 1. Apply CRDs
-              if [[ -n "${CRDS}" ]]; then
-                echo "${CRDS}" | oc apply -f - 2>&1 || true
-                echo "[$(date -u +%FT%T.%3NZ)] CRDs applied, waiting for establishment..."
-                sleep 5
+                echo "[$(date -u +%FT%T.%3NZ)] Waiting for IDMS to propagate..."
+                sleep 30
+                for i in $(seq 1 40); do
+                  UPDATING=$(oc get mcp worker -o jsonpath='{.status.conditions[?(@.type=="Updating")].status}' 2>/dev/null || echo "Unknown")
+                  UPDATED=$(oc get mcp worker -o jsonpath='{.status.conditions[?(@.type=="Updated")].status}' 2>/dev/null || echo "")
+                  if [[ "${UPDATED}" == "True" && "${UPDATING}" != "True" ]]; then
+                    echo "[$(date -u +%FT%T.%3NZ)] Nodes updated with mirror config"
+                    break
+                  fi
+                  echo "[$(date -u +%FT%T.%3NZ)] Waiting for nodes... (Updated=${UPDATED}, Updating=${UPDATING})"
+                  [[ ${i} -eq 40 ]] && echo "[$(date -u +%FT%T.%3NZ)] WARNING: MCP wait timed out, continuing anyway"
+                  sleep 30
+                done
               fi
 
-              # 2. Apply other resources (ServiceAccounts, Roles, etc.)
-              if [[ -n "${OTHER_OBJS}" ]]; then
-                echo "${OTHER_OBJS}" | oc apply -n "${INSTALL_NAMESPACE}" -f - 2>&1 || true
-              fi
+              # CatalogSource
+              CATSRC=$(oc create -f - -o jsonpath='{.metadata.name}' <<CS_EOF
+              apiVersion: operators.coreos.com/v1alpha1
+              kind: CatalogSource
+              metadata:
+                generateName: oo-
+                namespace: ${INSTALL_NAMESPACE}
+              spec:
+                sourceType: grpc
+                image: ${FBC_FRAGMENT}
+                displayName: "Certsuite Test Catalog"
+                publisher: "konflux-certsuite"
+              CS_EOF
+              )
 
-              # 3. Apply CSV
-              if [[ -z "${CSV_OBJ}" ]]; then
-                echo "ERROR: No CSV found in bundle objects" >&2
-                exit 1
-              fi
+              # Wait for CatalogSource
+              for i in $(seq 1 60); do
+                STATE=$(oc get catalogsource "${CATSRC}" -n "${INSTALL_NAMESPACE}" \
+                  -o jsonpath='{.status.connectionState.lastObservedState}' 2>/dev/null || echo "")
+                [[ "${STATE}" == "READY" ]] && break
+                [[ ${i} -eq 60 ]] && { echo "ERROR: CatalogSource not ready"; exit 1; }
+                sleep 10
+              done
 
-              # Set CSV namespace and apply
-              CSV_OBJ=$(echo "${CSV_OBJ}" | jq --arg ns "${INSTALL_NAMESPACE}" '.metadata.namespace = $ns')
-              echo "${CSV_OBJ}" | oc apply -f - 2>&1
+              # Bundle name + Subscription
+              BUNDLE_NAME=$(echo "${bundle_render_out}" | jq -r 'select(.schema == "olm.bundle") | .name' | head -1)
 
-              CSV_NAME=$(echo "${CSV_OBJ}" | jq -r '.metadata.name')
-              echo "[$(date -u +%FT%T.%3NZ)] CSV '${CSV_NAME}' applied, waiting for phase=Succeeded..."
+              SUB=$(oc create -f - -o jsonpath='{.metadata.name}' <<SUB_EOF
+              apiVersion: operators.coreos.com/v1alpha1
+              kind: Subscription
+              metadata:
+                generateName: oo-
+                namespace: ${INSTALL_NAMESPACE}
+              spec:
+                channel: ${CHANNEL_NAME}
+                installPlanApproval: Automatic
+                name: ${PACKAGE_NAME}
+                source: ${CATSRC}
+                sourceNamespace: ${INSTALL_NAMESPACE}
+                startingCSV: ${BUNDLE_NAME}
+              SUB_EOF
+              )
 
               # Wait for CSV
-              for i in $(seq 1 90); do
-                PHASE=$(oc get csv "${CSV_NAME}" -n "${INSTALL_NAMESPACE}" \
-                  -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
-                if [[ "${PHASE}" == "Succeeded" ]]; then
-                  echo "[$(date -u +%FT%T.%3NZ)] CSV '${CSV_NAME}' ready"
-                  exit 0
-                elif [[ "${PHASE}" == "Failed" ]]; then
-                  echo "ERROR: CSV failed:" >&2
-                  oc get csv "${CSV_NAME}" -n "${INSTALL_NAMESPACE}" -o jsonpath='{.status.message}' >&2
-                  exit 1
+              for i in $(seq 1 120); do
+                CSV=$(oc get subscription "${SUB}" -n "${INSTALL_NAMESPACE}" \
+                  -o jsonpath='{.status.installedCSV}' 2>/dev/null || echo "")
+                if [[ -n "${CSV}" ]]; then
+                  PHASE=$(oc get csv "${CSV}" -n "${INSTALL_NAMESPACE}" \
+                    -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                  if [[ "${PHASE}" == "Succeeded" ]]; then
+                    echo "[$(date -u +%FT%T.%3NZ)] CSV '${CSV}' ready"
+                    exit 0
+                  elif [[ "${PHASE}" == "Failed" ]]; then
+                    echo "ERROR: CSV failed:" >&2
+                    oc get csv "${CSV}" -n "${INSTALL_NAMESPACE}" -o jsonpath='{.status.message}' >&2
+                    exit 1
+                  fi
                 fi
                 sleep 10
               done
 
               echo "ERROR: Timed out waiting for CSV" >&2
-              oc get csv "${CSV_NAME}" -n "${INSTALL_NAMESPACE}" -o yaml >&2
+              oc get subscription "${SUB}" -n "${INSTALL_NAMESPACE}" -o yaml >&2
+              oc get installplan -n "${INSTALL_NAMESPACE}" -o yaml >&2
               exit 1
 
           # ── Step 3: Deploy operands from test bundle ─────────────────
