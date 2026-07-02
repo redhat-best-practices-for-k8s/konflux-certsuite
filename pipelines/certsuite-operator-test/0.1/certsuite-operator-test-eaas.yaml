@@ -35,11 +35,24 @@ spec:
     - name: CHANNEL_NAME
       type: string
       default: ""
-    # NOTE: CREDENTIALS_SECRET_NAME, OCI_REF, CERT_TRACK_* params are not
-    # included here because Konflux IntegrationTestScenarios do not provide
-    # pipeline-level workspace bindings needed by the collect-results task.
-    # Results collection should be added as a step inside deploy-and-test
-    # when needed.
+    - name: CREDENTIALS_SECRET_NAME
+      type: string
+      default: ""
+      description: Secret for OCI registry credentials. Empty skips OCI push.
+    - name: OCI_REF
+      type: string
+      default: ""
+      description: OCI artifact reference for results. Empty skips OCI push.
+    - name: CERT_TRACK_URL
+      type: string
+      default: ""
+      description: Base URL of cert-track-results. Empty skips upload.
+    - name: CERT_TRACK_SECRET_NAME
+      type: string
+      default: ""
+    - name: CERT_TRACK_SECRET_KEY
+      type: string
+      default: "api-token"
 
   tasks:
     # ── 1. Parse Snapshot Metadata ──────────────────────────────────────
@@ -563,6 +576,4 @@ spec:
               done
 
     # Results are printed in the deploy-and-test step's certsuite summary.
-    # TODO: Add collect-results as a step inside deploy-and-test when
-    # cert-track and OCI push are needed (Konflux IntegrationTestScenarios
-    # do not provide pipeline-level workspace bindings).
+    # cert-track and OCI push can be added here when needed.
