@@ -523,8 +523,15 @@ spec:
                 sleep 10
               done
 
-              echo "ERROR: Timed out waiting for CSV '${CSV_NAME}'" >&2
-              oc get csv "${CSV_NAME}" -n "${INSTALL_NAMESPACE}" -o yaml >&2
+              echo "ERROR: Timed out waiting for CSV '${CSV_NAME}' (phase=${PHASE})" >&2
+              echo "=== CSV Status ===" >&2
+              oc get csv "${CSV_NAME}" -n "${INSTALL_NAMESPACE}" -o jsonpath='{.status}' 2>&1 | jq . >&2 || true
+              echo "=== Pods ===" >&2
+              oc get pods -n "${INSTALL_NAMESPACE}" -o wide 2>&1 >&2 || true
+              echo "=== Pod Events ===" >&2
+              oc get events -n "${INSTALL_NAMESPACE}" --sort-by='.lastTimestamp' 2>&1 | tail -30 >&2 || true
+              echo "=== ImagePullBackOff Details ===" >&2
+              oc get pods -n "${INSTALL_NAMESPACE}" -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{range .status.containerStatuses[*]}{.state.waiting.reason}{": "}{.state.waiting.message}{"\n"}{end}{end}' 2>&1 >&2 || true
               exit 1
 
           # ── Step 3: Deploy operands from test bundle ─────────────────
