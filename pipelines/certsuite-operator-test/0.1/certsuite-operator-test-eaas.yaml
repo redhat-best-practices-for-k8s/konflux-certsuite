@@ -330,14 +330,14 @@ spec:
               echo "[$(date -u +%FT%T.%3NZ)] Deploying operator: package=${PACKAGE_NAME} channel=${CHANNEL_NAME}"
               oc whoami || { echo "ERROR: Cannot connect to cluster"; exit 1; }
 
-              if ! bundle_render_out=$(opm render "${BUNDLE_IMAGE}"); then
-                echo "ERROR: Failed to render bundle image" >&2
+              if ! bundle_render_out=$(opm render "${FBC_FRAGMENT}"); then
+                echo "ERROR: Failed to render FBC fragment" >&2
                 exit 1
               fi
 
-              # Determine install namespace
+              # Determine install namespace (filter FBC output to our specific bundle)
               INSTALL_NAMESPACE=$(echo "${bundle_render_out}" | \
-                jq -r 'select(.schema == "olm.bundle") | .properties[]? |
+                jq -r --arg img "${BUNDLE_IMAGE}" 'select(.schema == "olm.bundle" and .image == $img) | .properties[]? |
                 select(.type == "olm.bundle.object") | .value.data' 2>/dev/null | \
                 base64 -d 2>/dev/null | \
                 jq -r 'select(.kind == "ClusterServiceVersion") |
@@ -398,7 +398,7 @@ spec:
               done
 
               # Bundle name + Subscription
-              BUNDLE_NAME=$(echo "${bundle_render_out}" | jq -r 'select(.schema == "olm.bundle") | .name' | head -1)
+              BUNDLE_NAME=$(echo "${bundle_render_out}" | jq -r --arg img "${BUNDLE_IMAGE}" 'select(.schema == "olm.bundle" and .image == $img) | .name' | head -1)
 
               SUB=$(oc create -f - -o jsonpath='{.metadata.name}' <<SUB_EOF
               apiVersion: operators.coreos.com/v1alpha1
@@ -436,7 +436,7 @@ spec:
 
           # ── Step 3: Deploy operands from test bundle ─────────────────
           - name: deploy-operands
-            image: quay.io/openshift/origin-cli:latest
+            image: quay.io/konflux-ci/konflux-test:v1.4.31@sha256:a7cae9e96663e277a3904d0c78630508ddb6cc8eebaa912a840bd20f68dcaad1
             volumeMounts:
               - name: credentials
                 mountPath: /credentials
