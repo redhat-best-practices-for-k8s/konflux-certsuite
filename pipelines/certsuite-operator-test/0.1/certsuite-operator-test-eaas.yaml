@@ -170,18 +170,65 @@ spec:
               - name: clusterVersions
                 value: ["$(steps.get-supported-versions.results.versions[*])"]
           - name: pick-cluster-arch
-            ref:
-              resolver: git
-              params:
-                - name: url
-                  value: https://github.com/konflux-ci/tekton-integration-catalog.git
-                - name: revision
-                  value: main
-                - name: pathInRepo
-                  value: stepactions/bundles/pick-cluster-arch/0.1/pick-cluster-arch.yaml
-            params:
-              - name: bundleImage
+            image: quay.io/konflux-ci/konflux-test:v1.4.31@sha256:a7cae9e96663e277a3904d0c78630508ddb6cc8eebaa912a840bd20f68dcaad1
+            results:
+              - name: bundleArch
+            env:
+              - name: FBC_FRAGMENT
+                value: "$(tasks.parse-metadata.results.component-container-image)"
+              - name: BUNDLE_IMAGE
                 value: "$(tasks.get-unreleased-bundle.results.unreleasedBundle)"
+            script: |
+              #!/usr/bin/env bash
+              set -euo pipefail
+
+              # The bundle image reference points to registry.redhat.io where the
+              # image is not yet published (unreleased). Extract architecture from
+              # the FBC fragment instead, which is accessible and contains the
+              # bundle's platform metadata.
+
+              ARCH=""
+
+              # Try inspecting the bundle image directly first (works if credentials exist)
+              if skopeo inspect --raw "docker://${BUNDLE_IMAGE}" &>/dev/null; then
+                MANIFEST=$(skopeo inspect --raw "docker://${BUNDLE_IMAGE}")
+                if echo "${MANIFEST}" | jq -e '.manifests' &>/dev/null; then
+                  ARCH=$(echo "${MANIFEST}" | jq -r '.manifests[0].platform.architecture // empty')
+                else
+                  ARCH=$(skopeo inspect "docker://${BUNDLE_IMAGE}" | jq -r '.Architecture // empty')
+                fi
+              fi
+
+              # Fallback: extract from FBC fragment metadata
+              if [[ -z "${ARCH}" ]]; then
+                echo "Bundle image not accessible at registry, extracting arch from FBC fragment..."
+                FBC_MANIFEST=$(skopeo inspect --raw "docker://${FBC_FRAGMENT}" 2>/dev/null || echo "")
+                if echo "${FBC_MANIFEST}" | jq -e '.manifests' &>/dev/null; then
+                  ARCH=$(echo "${FBC_MANIFEST}" | jq -r '.manifests[0].platform.architecture // empty')
+                elif [[ -n "${FBC_MANIFEST}" ]]; then
+                  ARCH=$(skopeo inspect "docker://${FBC_FRAGMENT}" | jq -r '.Architecture // empty')
+                fi
+              fi
+
+              # Default to amd64 if detection fails
+              ARCH="${ARCH:-amd64}"
+
+              # Map architecture to AWS instance type
+              case "${ARCH}" in
+                amd64|x86_64)
+                  INSTANCE_TYPE="m5.2xlarge"
+                  ;;
+                arm64|aarch64)
+                  INSTANCE_TYPE="m6g.2xlarge"
+                  ;;
+                *)
+                  echo "WARNING: Unknown arch '${ARCH}', defaulting to m5.2xlarge"
+                  INSTANCE_TYPE="m5.2xlarge"
+                  ;;
+              esac
+
+              echo "[$(date -u +%FT%T.%3NZ)] Detected arch: ${ARCH} -> instanceType: ${INSTANCE_TYPE}"
+              echo -n "${INSTANCE_TYPE}" > $(step.results.bundleArch.path)
 
     # ── 5. Provision Ephemeral Cluster ─────────────────────────────────
     - name: provision-cluster
