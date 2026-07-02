@@ -421,67 +421,68 @@ spec:
               OG_EOF
               fi
 
-              # Extract and apply bundle objects directly (IDMS not allowed on Hypershift)
-              echo "[$(date -u +%FT%T.%3NZ)] Extracting bundle objects from rendered bundle..."
-              BUNDLE_OBJECTS=$(echo "${bundle_render_out}" | \
-                jq -r 'select(.schema == "olm.bundle") | .properties[]? |
-                select(.type == "olm.bundle.object") | .value.data')
+              # Extract manifests from bundle image filesystem (IDMS not allowed on Hypershift)
+              MANIFESTS_DIR="/tmp/bundle-manifests"
+              mkdir -p "${MANIFESTS_DIR}"
 
-              if [[ -z "${BUNDLE_OBJECTS}" ]]; then
-                echo "ERROR: No olm.bundle.object properties in rendered bundle" >&2
-                echo "${bundle_render_out}" | jq -r 'select(.schema == "olm.bundle") | .properties[]? | .type' >&2
+              echo "[$(date -u +%FT%T.%3NZ)] Extracting manifests from bundle image..."
+              oc image extract "${RENDER_IMAGE}" --path /manifests/:${MANIFESTS_DIR}/ --confirm 2>&1
+
+              if [[ ! -d "${MANIFESTS_DIR}" ]] || [[ -z "$(ls -A ${MANIFESTS_DIR} 2>/dev/null)" ]]; then
+                echo "ERROR: No manifests extracted from bundle image" >&2
                 exit 1
               fi
 
-              # Sort objects: CRDs first, then others, then CSV last
-              CRDS=""
-              CSV_OBJ=""
-              OTHER_OBJS=""
+              echo "[$(date -u +%FT%T.%3NZ)] Extracted manifests:"
+              ls -la "${MANIFESTS_DIR}/"
 
-              while IFS= read -r obj_b64; do
-                [[ -z "${obj_b64}" ]] && continue
-                decoded=$(echo "${obj_b64}" | base64 -d 2>/dev/null) || continue
-                kind=$(echo "${decoded}" | jq -r '.kind // empty' 2>/dev/null) || continue
+              # Apply CRDs first
+              for f in "${MANIFESTS_DIR}"/*.crd.yaml "${MANIFESTS_DIR}"/*.crd.yml; do
+                [[ -f "${f}" ]] || continue
+                echo "[$(date -u +%FT%T.%3NZ)] Applying CRD: $(basename ${f})"
+                oc apply -f "${f}" 2>&1
+              done
 
-                case "${kind}" in
-                  CustomResourceDefinition)
-                    CRDS="${CRDS}${decoded}"$'\n---\n'
-                    ;;
-                  ClusterServiceVersion)
-                    CSV_OBJ="${decoded}"
-                    ;;
-                  *)
-                    OTHER_OBJS="${OTHER_OBJS}${decoded}"$'\n---\n'
-                    ;;
-                esac
-              done <<< "${BUNDLE_OBJECTS}"
+              # Also check for CRDs by content (some bundles don't use .crd. naming)
+              for f in "${MANIFESTS_DIR}"/*.yaml "${MANIFESTS_DIR}"/*.yml; do
+                [[ -f "${f}" ]] || continue
+                KIND=$(grep -m1 '^kind:' "${f}" | awk '{print $2}')
+                if [[ "${KIND}" == "CustomResourceDefinition" ]]; then
+                  echo "[$(date -u +%FT%T.%3NZ)] Applying CRD: $(basename ${f})"
+                  oc apply -f "${f}" 2>&1 || true
+                fi
+              done
+              sleep 5
 
-              # 1. Apply CRDs
-              if [[ -n "${CRDS}" ]]; then
-                echo "[$(date -u +%FT%T.%3NZ)] Applying CRDs..."
-                echo "${CRDS}" | oc apply -f - 2>&1
-                sleep 5
+              # Apply CSV
+              CSV_FILE=""
+              for f in "${MANIFESTS_DIR}"/*.clusterserviceversion.yaml "${MANIFESTS_DIR}"/*.clusterserviceversion.yml; do
+                [[ -f "${f}" ]] && CSV_FILE="${f}" && break
+              done
+
+              # Fallback: find CSV by content
+              if [[ -z "${CSV_FILE}" ]]; then
+                for f in "${MANIFESTS_DIR}"/*.yaml "${MANIFESTS_DIR}"/*.yml; do
+                  [[ -f "${f}" ]] || continue
+                  KIND=$(grep -m1 '^kind:' "${f}" | awk '{print $2}')
+                  if [[ "${KIND}" == "ClusterServiceVersion" ]]; then
+                    CSV_FILE="${f}"
+                    break
+                  fi
+                done
               fi
 
-              # 2. Apply other resources (ServiceAccounts, Roles, etc.)
-              if [[ -n "${OTHER_OBJS}" ]]; then
-                echo "[$(date -u +%FT%T.%3NZ)] Applying other bundle resources..."
-                echo "${OTHER_OBJS}" | oc apply -n "${INSTALL_NAMESPACE}" -f - 2>&1 || true
-              fi
-
-              # 3. Apply CSV
-              if [[ -z "${CSV_OBJ}" ]]; then
-                echo "ERROR: No CSV found in bundle objects" >&2
+              if [[ -z "${CSV_FILE}" ]]; then
+                echo "ERROR: No CSV found in extracted manifests" >&2
+                ls -la "${MANIFESTS_DIR}/"
                 exit 1
               fi
 
-              CSV_OBJ=$(echo "${CSV_OBJ}" | jq --arg ns "${INSTALL_NAMESPACE}" '.metadata.namespace = $ns')
-              echo "[$(date -u +%FT%T.%3NZ)] Applying CSV..."
-              echo "${CSV_OBJ}" | oc apply -f - 2>&1
+              CSV_NAME=$(grep -m1 '^  name:' "${CSV_FILE}" | awk '{print $2}')
+              echo "[$(date -u +%FT%T.%3NZ)] Applying CSV '${CSV_NAME}' to namespace ${INSTALL_NAMESPACE}..."
+              oc apply -n "${INSTALL_NAMESPACE}" -f "${CSV_FILE}" 2>&1
 
-              CSV_NAME=$(echo "${CSV_OBJ}" | jq -r '.metadata.name')
               echo "[$(date -u +%FT%T.%3NZ)] Waiting for CSV '${CSV_NAME}' phase=Succeeded..."
-
               for i in $(seq 1 90); do
                 PHASE=$(oc get csv "${CSV_NAME}" -n "${INSTALL_NAMESPACE}" \
                   -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
