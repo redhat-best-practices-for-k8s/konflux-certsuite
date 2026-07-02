@@ -505,6 +505,17 @@ spec:
                 fi
               fi
 
+              # Patch CSV: remove minKubeVersion (EaaS may not have the required version yet)
+              if grep -q 'minKubeVersion' "${CSV_FILE}"; then
+                echo "[$(date -u +%FT%T.%3NZ)] Removing minKubeVersion requirement from CSV..."
+                sed -i '/minKubeVersion/d' "${CSV_FILE}"
+              fi
+
+              # Pre-create ServiceAccounts referenced in the CSV
+              for SA in $(grep 'serviceAccountName:' "${CSV_FILE}" | awk '{print $2}' | sort -u); do
+                oc create serviceaccount "${SA}" -n "${INSTALL_NAMESPACE}" 2>/dev/null || true
+              done
+
               echo "[$(date -u +%FT%T.%3NZ)] Applying CSV '${CSV_NAME}' to namespace ${INSTALL_NAMESPACE}..."
               oc apply -n "${INSTALL_NAMESPACE}" -f "${CSV_FILE}" 2>&1
 
@@ -622,6 +633,15 @@ spec:
               #!/usr/bin/env bash
               set -euo pipefail
 
+              # Verify kubeconfig is accessible
+              echo "[$(date -u +%FT%T.%3NZ)] KUBECONFIG=${KUBECONFIG}"
+              if [[ ! -f "${KUBECONFIG}" ]]; then
+                echo "ERROR: Kubeconfig file not found at ${KUBECONFIG}" >&2
+                ls -la /credentials/ >&2
+                exit 1
+              fi
+              echo "[$(date -u +%FT%T.%3NZ)] Connected as: $(oc whoami 2>/dev/null || echo 'UNKNOWN')"
+
               RESULTS_DIR="/workspace/results"
               CONFIG_FILE="/workspace/test-bundle/certsuite_config.yml"
               mkdir -p "${RESULTS_DIR}"
@@ -643,7 +663,7 @@ spec:
                 cat "${CONFIG_FILE}"
               fi
 
-              CONFIG_ARGS="--config-file ${CONFIG_FILE}"
+              CONFIG_ARGS="--config-file ${CONFIG_FILE} --kubeconfig ${KUBECONFIG}"
 
               if [[ -z "${CERTSUITE_LABELS}" ]]; then
                 SUITE_DIR="${RESULTS_DIR}/all"
