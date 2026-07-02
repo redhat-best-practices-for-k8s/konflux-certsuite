@@ -61,10 +61,6 @@ spec:
     - name: provision-eaas-space
       runAfter:
         - parse-metadata
-      when:
-        - input: $(tasks.parse-metadata.results.test-event-type)
-          operator: in
-          values: ["push", "Push"]
       taskRef:
         resolver: git
         params:
@@ -84,10 +80,6 @@ spec:
     - name: get-unreleased-bundle
       runAfter:
         - provision-eaas-space
-      when:
-        - input: $(tasks.parse-metadata.results.test-event-type)
-          operator: in
-          values: ["push", "Push"]
       taskSpec:
         results:
           - name: unreleasedBundle
@@ -129,9 +121,6 @@ spec:
         - input: "$(tasks.get-unreleased-bundle.results.unreleasedBundle)"
           operator: notin
           values: [""]
-        - input: $(tasks.parse-metadata.results.test-event-type)
-          operator: in
-          values: ["push", "Push"]
       taskSpec:
         results:
           - name: ocpVersion
@@ -195,9 +184,6 @@ spec:
         - input: "$(tasks.pick-cluster-params.results.bundleArch)"
           operator: notin
           values: [""]
-        - input: $(tasks.parse-metadata.results.test-event-type)
-          operator: in
-          values: ["push", "Push"]
       taskSpec:
         results:
           - name: clusterName
@@ -242,9 +228,6 @@ spec:
         - input: "$(tasks.get-unreleased-bundle.results.unreleasedBundle)"
           operator: notin
           values: [""]
-        - input: $(tasks.parse-metadata.results.test-event-type)
-          operator: in
-          values: ["push", "Push"]
       params:
         - name: eaasSpaceSecretRef
           value: $(tasks.provision-eaas-space.results.secretRef)
