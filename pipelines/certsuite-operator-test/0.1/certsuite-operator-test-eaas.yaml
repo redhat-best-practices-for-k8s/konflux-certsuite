@@ -35,24 +35,11 @@ spec:
     - name: CHANNEL_NAME
       type: string
       default: ""
-    - name: CREDENTIALS_SECRET_NAME
-      type: string
-      default: ""
-      description: Secret for OCI registry credentials. Empty skips OCI push.
-    - name: OCI_REF
-      type: string
-      default: ""
-      description: OCI artifact reference for results. Empty skips OCI push.
-    - name: CERT_TRACK_URL
-      type: string
-      default: ""
-      description: Base URL of cert-track-results. Empty skips upload.
-    - name: CERT_TRACK_SECRET_NAME
-      type: string
-      default: ""
-    - name: CERT_TRACK_SECRET_KEY
-      type: string
-      default: "api-token"
+    # NOTE: CREDENTIALS_SECRET_NAME, OCI_REF, CERT_TRACK_* params are not
+    # included here because Konflux IntegrationTestScenarios do not provide
+    # pipeline-level workspace bindings needed by the collect-results task.
+    # Results collection should be added as a step inside deploy-and-test
+    # when needed.
 
   tasks:
     # ── 1. Parse Snapshot Metadata ──────────────────────────────────────
@@ -592,42 +579,7 @@ spec:
                 echo "[$(date -u +%FT%T.%3NZ)] ${SUITE}: total=${TOTAL} passed=${PASSED} failed=${FAILED}"
               done
 
-    # ── 7. Collect Results ─────────────────────────────────────────────
-    - name: collect-results
-      runAfter:
-        - deploy-and-test
-      when:
-        - input: $(tasks.parse-metadata.results.test-event-type)
-          operator: in
-          values: ["push", "Push"]
-      taskRef:
-        resolver: git
-        params:
-          - name: url
-            value: https://github.com/redhat-best-practices-for-k8s/konflux-certsuite.git
-          - name: revision
-            value: main
-          - name: pathInRepo
-            value: tasks/collect-results/0.1/collect-results.yaml
-      params:
-        - name: CERT_TRACK_URL
-          value: $(params.CERT_TRACK_URL)
-        - name: CERT_TRACK_SECRET_NAME
-          value: $(params.CERT_TRACK_SECRET_NAME)
-        - name: CERT_TRACK_SECRET_KEY
-          value: $(params.CERT_TRACK_SECRET_KEY)
-        - name: RELEASE_VERSION
-          value: "$(tasks.parse-metadata.results.source-git-revision)"
-        - name: OPERATOR_NAME
-          value: "$(tasks.get-unreleased-bundle.results.packageName)"
-        - name: OCI_REF
-          value: $(params.OCI_REF)
-        - name: CREDENTIALS_SECRET_NAME
-          value: $(params.CREDENTIALS_SECRET_NAME)
-      workspaces:
-        - name: shared
-          workspace: shared
-
-  workspaces:
-    - name: shared
-      description: Shared workspace for results
+    # Results are printed in the deploy-and-test step's certsuite summary.
+    # TODO: Add collect-results as a step inside deploy-and-test when
+    # cert-track and OCI push are needed (Konflux IntegrationTestScenarios
+    # do not provide pipeline-level workspace bindings).
