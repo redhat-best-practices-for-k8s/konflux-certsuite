@@ -407,7 +407,7 @@ spec:
               echo "[$(date -u +%FT%T.%3NZ)] Namespace: ${INSTALL_NAMESPACE}"
               echo -n "${INSTALL_NAMESPACE}" > /workspace/install-namespace
 
-              # OperatorGroup
+              # OperatorGroup (OwnNamespace mode — most operators require this)
               EXISTING_OG=$(oc -n "${INSTALL_NAMESPACE}" get operatorgroup -o jsonpath="{.items[*].metadata.name}" 2>/dev/null || true)
               if [[ -z "${EXISTING_OG}" ]]; then
                 oc create -f - <<OG_EOF
@@ -417,7 +417,8 @@ spec:
                 generateName: oo-
                 namespace: ${INSTALL_NAMESPACE}
               spec:
-                targetNamespaces: []
+                targetNamespaces:
+                  - ${INSTALL_NAMESPACE}
               OG_EOF
               fi
 
@@ -488,7 +489,7 @@ spec:
                 oc create namespace "${INSTALL_NAMESPACE}" 2>/dev/null || true
                 echo -n "${INSTALL_NAMESPACE}" > /workspace/install-namespace
 
-                # Ensure OperatorGroup exists in the correct namespace
+                # Ensure OperatorGroup exists in the correct namespace (OwnNamespace mode)
                 EXISTING_OG=$(oc -n "${INSTALL_NAMESPACE}" get operatorgroup -o jsonpath="{.items[*].metadata.name}" 2>/dev/null || true)
                 if [[ -z "${EXISTING_OG}" ]]; then
                   oc create -f - <<OG2_EOF
@@ -498,7 +499,8 @@ spec:
                 generateName: oo-
                 namespace: ${INSTALL_NAMESPACE}
               spec:
-                targetNamespaces: []
+                targetNamespaces:
+                  - ${INSTALL_NAMESPACE}
               OG2_EOF
                 fi
               fi
