@@ -511,6 +511,40 @@ spec:
                 sed -i '/minKubeVersion/d' "${CSV_FILE}"
               fi
 
+              # Patch CSV: replace registry.redhat.io images with quay.io equivalents
+              echo "[$(date -u +%FT%T.%3NZ)] Patching image references in CSV..."
+              FBC_BASE="${FBC_FRAGMENT%%@*}"
+              TENANT_AND_REPO="${FBC_BASE#quay.io/redhat-user-workloads/}"
+              TENANT="${TENANT_AND_REPO%%/*}"
+
+              # Get all component repos in the tenant (from known components)
+              QUAY_BASE="quay.io/redhat-user-workloads/${TENANT}"
+              COMPONENT_REPOS=$(echo "${FBC_FRAGMENT}" | sed 's|@.*||' | sed "s|${QUAY_BASE}/||")
+
+              # Find all registry.redhat.io image@digest references in the CSV
+              IMAGES=$(grep -oP 'registry\.redhat\.io/[^"[:space:]]+@sha256:[a-f0-9]+' "${CSV_FILE}" | sort -u)
+              for IMG in ${IMAGES}; do
+                DIGEST="${IMG##*@}"
+                echo "  Resolving: ${IMG}"
+
+                # Try each known component repo in the tenant
+                RESOLVED=""
+                for REPO in ptp-operator-mono-4-22 linuxptp-daemon-mono-4-22 cloud-event-proxy-mono-4-22 ptp-must-gather-mono-4-22; do
+                  CANDIDATE="${QUAY_BASE}/${REPO}@${DIGEST}"
+                  if skopeo inspect --raw "docker://${CANDIDATE}" &>/dev/null; then
+                    RESOLVED="${CANDIDATE}"
+                    break
+                  fi
+                done
+
+                if [[ -n "${RESOLVED}" ]]; then
+                  echo "    -> ${RESOLVED}"
+                  sed -i "s|${IMG}|${RESOLVED}|g" "${CSV_FILE}"
+                else
+                  echo "    -> NOT FOUND in quay.io (may be a released base image)"
+                fi
+              done
+
               # Pre-create ServiceAccounts and grant cluster-admin (OLM requires RBAC to be present)
               for SA in $(grep 'serviceAccountName:' "${CSV_FILE}" | awk '{print $2}' | sort -u); do
                 oc create serviceaccount "${SA}" -n "${INSTALL_NAMESPACE}" 2>/dev/null || true
