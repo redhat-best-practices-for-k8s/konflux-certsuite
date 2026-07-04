@@ -516,20 +516,32 @@ spec:
               FBC_BASE="${FBC_FRAGMENT%%@*}"
               TENANT_AND_REPO="${FBC_BASE#quay.io/redhat-user-workloads/}"
               TENANT="${TENANT_AND_REPO%%/*}"
-
-              # Get all component repos in the tenant (from known components)
               QUAY_BASE="quay.io/redhat-user-workloads/${TENANT}"
-              COMPONENT_REPOS=$(echo "${FBC_FRAGMENT}" | sed 's|@.*||' | sed "s|${QUAY_BASE}/||")
 
-              # Find all registry.redhat.io image@digest references in the CSV
+              # Discover all repos in the tenant via Quay.io API
+              echo "[$(date -u +%FT%T.%3NZ)] Discovering repos in tenant '${TENANT}'..."
+              REPOS=$(curl -s "https://quay.io/api/v1/repository?namespace=redhat-user-workloads&last_modified=true" 2>/dev/null | \
+                jq -r --arg tenant "${TENANT}" \
+                '.repositories[]? | select(.name | startswith($tenant + "/")) | .name' 2>/dev/null | \
+                sed "s|^${TENANT}/||" || echo "")
+
+              # Fallback: if API doesn't work, try SNAPSHOT components
+              if [[ -z "${REPOS}" ]]; then
+                echo "[$(date -u +%FT%T.%3NZ)] API discovery failed, using SNAPSHOT components..."
+                REPOS=$(echo "${SNAPSHOT}" | jq -r '.components[]? | .containerImage' 2>/dev/null | \
+                  sed "s|${QUAY_BASE}/||" | sed 's|@.*||' || echo "")
+              fi
+
+              echo "[$(date -u +%FT%T.%3NZ)] Available repos: ${REPOS}"
+
+              # For each registry.redhat.io image in the CSV, try to find in quay.io
               IMAGES=$(grep -oP 'registry\.redhat\.io/[^"[:space:]]+@sha256:[a-f0-9]+' "${CSV_FILE}" | sort -u)
               for IMG in ${IMAGES}; do
                 DIGEST="${IMG##*@}"
                 echo "  Resolving: ${IMG}"
 
-                # Try each known component repo in the tenant
                 RESOLVED=""
-                for REPO in ptp-operator-mono-4-22 linuxptp-daemon-mono-4-22 cloud-event-proxy-mono-4-22 ptp-must-gather-mono-4-22; do
+                for REPO in ${REPOS}; do
                   CANDIDATE="${QUAY_BASE}/${REPO}@${DIGEST}"
                   if skopeo inspect --raw "docker://${CANDIDATE}" &>/dev/null; then
                     RESOLVED="${CANDIDATE}"
