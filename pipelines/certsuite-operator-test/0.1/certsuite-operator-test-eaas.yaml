@@ -518,18 +518,38 @@ spec:
               TENANT="${TENANT_AND_REPO%%/*}"
               QUAY_BASE="quay.io/redhat-user-workloads/${TENANT}"
 
-              # Discover all repos in the tenant via Quay.io API
+              # Discover repos in the tenant via Quay.io search API
               echo "[$(date -u +%FT%T.%3NZ)] Discovering repos in tenant '${TENANT}'..."
-              REPOS=$(curl -s "https://quay.io/api/v1/repository?namespace=redhat-user-workloads&last_modified=true" 2>/dev/null | \
+              REPOS=$(curl -s "https://quay.io/api/v1/find/repositories?query=${TENANT}&page=1&includeUsage=false" 2>/dev/null | \
                 jq -r --arg tenant "${TENANT}" \
-                '.repositories[]? | select(.name | startswith($tenant + "/")) | .name' 2>/dev/null | \
+                '.results[]? | select(.namespace == "redhat-user-workloads" and (.name | startswith($tenant + "/"))) | .name' 2>/dev/null | \
                 sed "s|^${TENANT}/||" || echo "")
 
-              # Fallback: if API doesn't work, try SNAPSHOT components
+              # Fallback: try listing with different API format
               if [[ -z "${REPOS}" ]]; then
-                echo "[$(date -u +%FT%T.%3NZ)] API discovery failed, using SNAPSHOT components..."
-                REPOS=$(echo "${SNAPSHOT}" | jq -r '.components[]? | .containerImage' 2>/dev/null | \
-                  sed "s|${QUAY_BASE}/||" | sed 's|@.*||' || echo "")
+                REPOS=$(curl -s "https://quay.io/api/v1/repository?namespace=redhat-user-workloads&public=true" 2>/dev/null | \
+                  jq -r --arg tenant "${TENANT}" \
+                  '.repositories[]? | select(.name | startswith($tenant + "/")) | .name' 2>/dev/null | \
+                  sed "s|^${TENANT}/||" || echo "")
+              fi
+
+              # Fallback: derive repo names from FBC repo pattern + common suffixes
+              if [[ -z "${REPOS}" ]]; then
+                echo "[$(date -u +%FT%T.%3NZ)] API discovery failed, deriving from FBC naming pattern..."
+                VERSION_SUFFIX=$(echo "${FBC_REPO}" | grep -oP '\d+-\d+$' || echo "")
+                if [[ -n "${VERSION_SUFFIX}" ]]; then
+                  BASE_NAME=$(echo "${FBC_REPO}" | sed "s|-fbc-${VERSION_SUFFIX}$||")
+                  REPOS="${BASE_NAME}-mono-${VERSION_SUFFIX}"
+                  # Add common operator component patterns
+                  for SUFFIX in operator daemon cloud-event-proxy must-gather bundle-mono; do
+                    REPOS="${REPOS} ${BASE_NAME}-${SUFFIX}-mono-${VERSION_SUFFIX}"
+                    REPOS="${REPOS} ${SUFFIX}-mono-${VERSION_SUFFIX}"
+                  done
+                  # Also add SNAPSHOT components
+                  SNAP_REPOS=$(echo "${SNAPSHOT}" | jq -r '.components[]? | .containerImage' 2>/dev/null | \
+                    sed "s|${QUAY_BASE}/||" | sed 's|@.*||' || echo "")
+                  REPOS="${REPOS} ${SNAP_REPOS}"
+                fi
               fi
 
               echo "[$(date -u +%FT%T.%3NZ)] Available repos: ${REPOS}"
