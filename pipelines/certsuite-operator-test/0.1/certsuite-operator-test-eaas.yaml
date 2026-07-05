@@ -349,6 +349,12 @@ spec:
               echo "[$(date -u +%FT%T.%3NZ)] Deploying operator: package=${PACKAGE_NAME} channel=${CHANNEL_NAME}"
               oc whoami || { echo "ERROR: Cannot connect to cluster"; exit 1; }
 
+              # Print console credentials for debugging (ephemeral cluster)
+              PASSWORD_FILE=$(ls /credentials/*-password 2>/dev/null | head -1)
+              if [[ -n "${PASSWORD_FILE}" ]]; then
+                echo "[$(date -u +%FT%T.%3NZ)] Console login: username=kubeadmin password=$(cat ${PASSWORD_FILE})"
+              fi
+
               # Resolve the bundle image to an accessible quay.io path
               BUNDLE_DIGEST="${BUNDLE_IMAGE##*@}"
 
