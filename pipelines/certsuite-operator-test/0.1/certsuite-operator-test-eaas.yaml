@@ -587,7 +587,7 @@ spec:
                 else
                   # For kube-rbac-proxy: use a known public image as fallback
                   if echo "${IMG}" | grep -q "kube-rbac-proxy"; then
-                    FALLBACK="gcr.io/kubebuilder/kube-rbac-proxy:v0.16.0"
+                    FALLBACK="quay.io/brancz/kube-rbac-proxy:v0.18.1"
                     echo "    -> Using public fallback: ${FALLBACK}"
                     sed -i "s|${IMG}|${FALLBACK}|g" "${CSV_FILE}"
                   else
