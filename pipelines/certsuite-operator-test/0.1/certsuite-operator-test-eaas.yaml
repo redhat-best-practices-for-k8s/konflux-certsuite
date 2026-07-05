@@ -585,7 +585,14 @@ spec:
                   echo "    -> ${RESOLVED}"
                   sed -i "s|${IMG}|${RESOLVED}|g" "${CSV_FILE}"
                 else
-                  echo "    -> NOT FOUND in quay.io (may be a released base image)"
+                  # For kube-rbac-proxy: use a known public image as fallback
+                  if echo "${IMG}" | grep -q "kube-rbac-proxy"; then
+                    FALLBACK="gcr.io/kubebuilder/kube-rbac-proxy:v0.16.0"
+                    echo "    -> Using public fallback: ${FALLBACK}"
+                    sed -i "s|${IMG}|${FALLBACK}|g" "${CSV_FILE}"
+                  else
+                    echo "    -> NOT FOUND in quay.io (leaving as-is)"
+                  fi
                 fi
               done
 
