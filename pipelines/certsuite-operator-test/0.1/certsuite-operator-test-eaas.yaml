@@ -729,9 +729,13 @@ spec:
                 ls -la /credentials/ >&2
                 exit 1
               fi
-              # Show pods and their labels in the target namespace for debugging
+              # Wait for operator to reconcile and create DaemonSet pods
               INSTALL_NS=""
               [[ -f /workspace/install-namespace ]] && INSTALL_NS=$(cat /workspace/install-namespace)
+              echo "[$(date -u +%FT%T.%3NZ)] Waiting 60s for operator to reconcile..."
+              sleep 60
+
+              # Show pods and their labels in the target namespace for debugging
               echo "[$(date -u +%FT%T.%3NZ)] Pods in namespace '${INSTALL_NS}':"
               oc --kubeconfig="${KUBECONFIG}" get pods -n "${INSTALL_NS}" -o wide 2>&1 || true
               echo "[$(date -u +%FT%T.%3NZ)] Pod labels:"
