@@ -729,8 +729,15 @@ spec:
                 ls -la /credentials/ >&2
                 exit 1
               fi
-              echo "[$(date -u +%FT%T.%3NZ)] Testing cluster access..."
-              kubectl --kubeconfig="${KUBECONFIG}" cluster-info 2>&1 | head -2 || true
+              # Show pods and their labels in the target namespace for debugging
+              INSTALL_NS=""
+              [[ -f /workspace/install-namespace ]] && INSTALL_NS=$(cat /workspace/install-namespace)
+              echo "[$(date -u +%FT%T.%3NZ)] Pods in namespace '${INSTALL_NS}':"
+              oc --kubeconfig="${KUBECONFIG}" get pods -n "${INSTALL_NS}" -o wide 2>&1 || true
+              echo "[$(date -u +%FT%T.%3NZ)] Pod labels:"
+              oc --kubeconfig="${KUBECONFIG}" get pods -n "${INSTALL_NS}" --show-labels 2>&1 || true
+              echo "[$(date -u +%FT%T.%3NZ)] DaemonSets:"
+              oc --kubeconfig="${KUBECONFIG}" get daemonsets -n "${INSTALL_NS}" 2>&1 || true
 
               RESULTS_DIR="/workspace/results"
               CONFIG_FILE="/workspace/test-bundle/certsuite_config.yml"
