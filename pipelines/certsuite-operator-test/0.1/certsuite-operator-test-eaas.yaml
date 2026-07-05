@@ -697,6 +697,15 @@ spec:
 
               echo "[$(date -u +%FT%T.%3NZ)] Operand deployment complete"
 
+              # Wait for operator to reconcile and create DaemonSet pods
+              echo "[$(date -u +%FT%T.%3NZ)] Waiting 60s for operator to reconcile..."
+              sleep 60
+
+              echo "[$(date -u +%FT%T.%3NZ)] Pods in namespace '${TARGET_NS}':"
+              oc get pods -n "${TARGET_NS}" --show-labels 2>&1 || true
+              echo "[$(date -u +%FT%T.%3NZ)] DaemonSets:"
+              oc get daemonsets -n "${TARGET_NS}" 2>&1 || true
+
           # ── Step 4: Run certsuite ────────────────────────────────────
           - name: run-certsuite
             image: quay.io/redhat-best-practices-for-k8s/certsuite:latest
@@ -729,19 +738,8 @@ spec:
                 ls -la /credentials/ >&2
                 exit 1
               fi
-              # Wait for operator to reconcile and create DaemonSet pods
               INSTALL_NS=""
               [[ -f /workspace/install-namespace ]] && INSTALL_NS=$(cat /workspace/install-namespace)
-              echo "[$(date -u +%FT%T.%3NZ)] Waiting 60s for operator to reconcile..."
-              sleep 60
-
-              # Show pods and their labels in the target namespace for debugging
-              echo "[$(date -u +%FT%T.%3NZ)] Pods in namespace '${INSTALL_NS}':"
-              oc --kubeconfig="${KUBECONFIG}" get pods -n "${INSTALL_NS}" -o wide 2>&1 || true
-              echo "[$(date -u +%FT%T.%3NZ)] Pod labels:"
-              oc --kubeconfig="${KUBECONFIG}" get pods -n "${INSTALL_NS}" --show-labels 2>&1 || true
-              echo "[$(date -u +%FT%T.%3NZ)] DaemonSets:"
-              oc --kubeconfig="${KUBECONFIG}" get daemonsets -n "${INSTALL_NS}" 2>&1 || true
 
               RESULTS_DIR="/workspace/results"
               CONFIG_FILE="/workspace/test-bundle/certsuite_config.yml"
