@@ -354,16 +354,16 @@ spec:
 
                 CANDIDATE="quay.io/redhat-user-workloads/${TENANT}/${BUNDLE_REPO}@${BUNDLE_DIGEST}"
                 echo "[$(date -u +%FT%T.%3NZ)] Trying derived path: ${CANDIDATE}"
-                if skopeo inspect --raw "docker://${CANDIDATE}" &>/dev/null; then
-                  QUAY_BUNDLE="${CANDIDATE}"
-                else
+                SKOPEO_ERR=$(skopeo inspect --raw "docker://${CANDIDATE}" 2>&1) && QUAY_BUNDLE="${CANDIDATE}"
+
+                if [[ -z "${QUAY_BUNDLE}" ]]; then
+                  echo "[$(date -u +%FT%T.%3NZ)] skopeo error: ${SKOPEO_ERR}"
                   # Also try without -mono-
                   BUNDLE_REPO2=$(echo "${FBC_REPO}" | sed 's/-fbc-/-bundle-/')
                   CANDIDATE2="quay.io/redhat-user-workloads/${TENANT}/${BUNDLE_REPO2}@${BUNDLE_DIGEST}"
                   echo "[$(date -u +%FT%T.%3NZ)] Trying: ${CANDIDATE2}"
-                  if skopeo inspect --raw "docker://${CANDIDATE2}" &>/dev/null; then
-                    QUAY_BUNDLE="${CANDIDATE2}"
-                  fi
+                  SKOPEO_ERR2=$(skopeo inspect --raw "docker://${CANDIDATE2}" 2>&1) && QUAY_BUNDLE="${CANDIDATE2}"
+                  [[ -z "${QUAY_BUNDLE}" ]] && echo "[$(date -u +%FT%T.%3NZ)] skopeo error: ${SKOPEO_ERR2}"
                 fi
               fi
 
