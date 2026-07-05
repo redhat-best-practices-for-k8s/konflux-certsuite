@@ -35,6 +35,15 @@ spec:
     - name: CHANNEL_NAME
       type: string
       default: ""
+    - name: COMPONENT_REPOS
+      type: string
+      default: ""
+      description: |
+        Space-separated list of quay.io repo names in the tenant that contain
+        operator images (e.g. "my-operator-mono-4-22 my-daemon-mono-4-22").
+        Used to resolve registry.redhat.io references to quay.io for
+        unreleased images. When empty, the pipeline tries to discover repos
+        automatically.
     - name: CREDENTIALS_SECRET_NAME
       type: string
       default: ""
@@ -260,6 +269,8 @@ spec:
           value: $(params.CERTSUITE_LABELS)
         - name: snapshot
           value: $(params.SNAPSHOT)
+        - name: componentRepos
+          value: $(params.COMPONENT_REPOS)
       taskSpec:
         params:
           - name: eaasSpaceSecretRef
@@ -279,6 +290,8 @@ spec:
           - name: certsuiteLabels
             type: string
           - name: snapshot
+            type: string
+          - name: componentRepos
             type: string
         volumes:
           - name: credentials
@@ -517,38 +530,23 @@ spec:
               TENANT_AND_REPO="${FBC_BASE#quay.io/redhat-user-workloads/}"
               TENANT="${TENANT_AND_REPO%%/*}"
               QUAY_BASE="quay.io/redhat-user-workloads/${TENANT}"
+              COMPONENT_REPOS="$(params.componentRepos)"
 
-              # Discover repos in the tenant via Quay.io search API
-              echo "[$(date -u +%FT%T.%3NZ)] Discovering repos in tenant '${TENANT}'..."
-              REPOS=$(curl -s "https://quay.io/api/v1/find/repositories?query=${TENANT}&page=1&includeUsage=false" 2>/dev/null | \
-                jq -r --arg tenant "${TENANT}" \
-                '.results[]? | select(.namespace == "redhat-user-workloads" and (.name | startswith($tenant + "/"))) | .name' 2>/dev/null | \
-                sed "s|^${TENANT}/||" || echo "")
-
-              # Fallback: try listing with different API format
-              if [[ -z "${REPOS}" ]]; then
-                REPOS=$(curl -s "https://quay.io/api/v1/repository?namespace=redhat-user-workloads&public=true" 2>/dev/null | \
+              # Use provided COMPONENT_REPOS param, or discover automatically
+              if [[ -n "${COMPONENT_REPOS}" ]]; then
+                REPOS="${COMPONENT_REPOS}"
+                echo "[$(date -u +%FT%T.%3NZ)] Using provided component repos: ${REPOS}"
+              else
+                echo "[$(date -u +%FT%T.%3NZ)] No COMPONENT_REPOS provided, trying auto-discovery..."
+                REPOS=$(curl -s "https://quay.io/api/v1/find/repositories?query=${TENANT}&page=1&includeUsage=false" 2>/dev/null | \
                   jq -r --arg tenant "${TENANT}" \
-                  '.repositories[]? | select(.name | startswith($tenant + "/")) | .name' 2>/dev/null | \
+                  '.results[]? | select(.namespace == "redhat-user-workloads" and (.name | startswith($tenant + "/"))) | .name' 2>/dev/null | \
                   sed "s|^${TENANT}/||" || echo "")
-              fi
 
-              # Fallback: derive repo names from FBC repo pattern + common suffixes
-              if [[ -z "${REPOS}" ]]; then
-                echo "[$(date -u +%FT%T.%3NZ)] API discovery failed, deriving from FBC naming pattern..."
-                VERSION_SUFFIX=$(echo "${FBC_REPO}" | grep -oP '\d+-\d+$' || echo "")
-                if [[ -n "${VERSION_SUFFIX}" ]]; then
-                  BASE_NAME=$(echo "${FBC_REPO}" | sed "s|-fbc-${VERSION_SUFFIX}$||")
-                  REPOS="${BASE_NAME}-mono-${VERSION_SUFFIX}"
-                  # Add common operator component patterns
-                  for SUFFIX in operator daemon cloud-event-proxy must-gather bundle-mono; do
-                    REPOS="${REPOS} ${BASE_NAME}-${SUFFIX}-mono-${VERSION_SUFFIX}"
-                    REPOS="${REPOS} ${SUFFIX}-mono-${VERSION_SUFFIX}"
-                  done
-                  # Also add SNAPSHOT components
-                  SNAP_REPOS=$(echo "${SNAPSHOT}" | jq -r '.components[]? | .containerImage' 2>/dev/null | \
+                if [[ -z "${REPOS}" ]]; then
+                  echo "[$(date -u +%FT%T.%3NZ)] Auto-discovery failed. Set COMPONENT_REPOS param for reliable resolution."
+                  REPOS=$(echo "${SNAPSHOT}" | jq -r '.components[]? | .containerImage' 2>/dev/null | \
                     sed "s|${QUAY_BASE}/||" | sed 's|@.*||' || echo "")
-                  REPOS="${REPOS} ${SNAP_REPOS}"
                 fi
               fi
 
