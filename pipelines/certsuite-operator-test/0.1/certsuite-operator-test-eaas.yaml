@@ -530,6 +530,14 @@ spec:
                 sed -i '/minKubeVersion/d' "${CSV_FILE}"
               fi
 
+              # Patch CSV: remove master nodeSelector (Hypershift has no schedulable masters)
+              if grep -q 'node-role.kubernetes.io/master' "${CSV_FILE}"; then
+                echo "[$(date -u +%FT%T.%3NZ)] Removing master nodeSelector (not available on Hypershift)..."
+                sed -i '/node-role.kubernetes.io\/master/d' "${CSV_FILE}"
+                # Clean up empty nodeSelector block
+                sed -i '/^\s*nodeSelector:\s*$/d' "${CSV_FILE}"
+              fi
+
               # Patch CSV: replace registry.redhat.io images with quay.io equivalents
               echo "[$(date -u +%FT%T.%3NZ)] Patching image references in CSV..."
               FBC_BASE="${FBC_FRAGMENT%%@*}"
