@@ -646,13 +646,20 @@ spec:
               BUNDLE_DIR="/workspace/test-bundle"
               mkdir -p "${BUNDLE_DIR}"
 
+              # Parse TEST_BUNDLE_REF: url[@branch]#path
               GIT_URL="${TEST_BUNDLE_REF%%#*}"
               BUNDLE_PATH="${TEST_BUNDLE_REF#*#}"
               [[ "${BUNDLE_PATH}" == "${TEST_BUNDLE_REF}" ]] && BUNDLE_PATH="."
 
-              echo "[$(date -u +%FT%T.%3NZ)] Cloning ${GIT_URL} (path: ${BUNDLE_PATH})"
+              GIT_BRANCH=""
+              if [[ "${GIT_URL}" == *"@"* && "${GIT_URL}" != *"@sha256:"* ]]; then
+                GIT_BRANCH="${GIT_URL##*@}"
+                GIT_URL="${GIT_URL%@*}"
+              fi
+
+              echo "[$(date -u +%FT%T.%3NZ)] Cloning ${GIT_URL} (branch: ${GIT_BRANCH:-default}, path: ${BUNDLE_PATH})"
               CLONE_DIR=$(mktemp -d)
-              git clone --depth 1 "${GIT_URL}" "${CLONE_DIR}"
+              git clone --depth 1 ${GIT_BRANCH:+--branch "${GIT_BRANCH}"} "${GIT_URL}" "${CLONE_DIR}"
               cp -r "${CLONE_DIR}/${BUNDLE_PATH}/." "${BUNDLE_DIR}/"
               rm -rf "${CLONE_DIR}"
 
