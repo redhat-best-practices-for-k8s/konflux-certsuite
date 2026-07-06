@@ -1,11 +1,15 @@
 targetNameSpaces:
   - name: "openshift-ptp"
 
-podsUnderTestLabels:
-  - "app: linuxptp-daemon"
+targetPodLabels:
+  - prefix: redhat-best-practices-for-k8s.com
+    name: generic
+    value: target
 
-operatorsUnderTestLabels:
-  - "name: ptp-operator"
+targetOperatorLabels:
+  - prefix: redhat-best-practices-for-k8s.com
+    name: operator
+    value: target
 
 targetCrdFilters:
   - nameSuffix: "ptp.openshift.io"
