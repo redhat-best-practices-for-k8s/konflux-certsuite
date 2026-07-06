@@ -441,137 +441,113 @@ spec:
               OG_EOF
               fi
 
-              # Extract manifests from bundle image filesystem (IDMS not allowed on Hypershift)
-              MANIFESTS_DIR="/tmp/bundle-manifests"
-              mkdir -p "${MANIFESTS_DIR}"
+              # ═══════════════════════════════════════════════════════════════════
+              # OLM FLOW: CatalogSource -> Subscription -> patch CSV -> recreate
+              # ═══════════════════════════════════════════════════════════════════
 
-              echo "[$(date -u +%FT%T.%3NZ)] Extracting manifests from bundle image..."
-              oc image extract "${RENDER_IMAGE}" --path /manifests/:${MANIFESTS_DIR}/ --confirm 2>&1
-
-              if [[ ! -d "${MANIFESTS_DIR}" ]] || [[ -z "$(ls -A ${MANIFESTS_DIR} 2>/dev/null)" ]]; then
-                echo "ERROR: No manifests extracted from bundle image" >&2
-                exit 1
-              fi
-
-              echo "[$(date -u +%FT%T.%3NZ)] Extracted manifests:"
-              ls -la "${MANIFESTS_DIR}/"
-
-              # Apply CRDs first
-              for f in "${MANIFESTS_DIR}"/*.crd.yaml "${MANIFESTS_DIR}"/*.crd.yml; do
-                [[ -f "${f}" ]] || continue
-                echo "[$(date -u +%FT%T.%3NZ)] Applying CRD: $(basename ${f})"
-                oc apply -f "${f}" 2>&1
-              done
-
-              # Also check for CRDs by content (some bundles don't use .crd. naming)
-              for f in "${MANIFESTS_DIR}"/*.yaml "${MANIFESTS_DIR}"/*.yml; do
-                [[ -f "${f}" ]] || continue
-                KIND=$(grep -m1 '^kind:' "${f}" | awk '{print $2}')
-                if [[ "${KIND}" == "CustomResourceDefinition" ]]; then
-                  echo "[$(date -u +%FT%T.%3NZ)] Applying CRD: $(basename ${f})"
-                  oc apply -f "${f}" 2>&1 || true
-                fi
-              done
-              sleep 5
-
-              # Apply CSV
-              CSV_FILE=""
-              for f in "${MANIFESTS_DIR}"/*.clusterserviceversion.yaml "${MANIFESTS_DIR}"/*.clusterserviceversion.yml; do
-                [[ -f "${f}" ]] && CSV_FILE="${f}" && break
-              done
-
-              # Fallback: find CSV by content
-              if [[ -z "${CSV_FILE}" ]]; then
-                for f in "${MANIFESTS_DIR}"/*.yaml "${MANIFESTS_DIR}"/*.yml; do
-                  [[ -f "${f}" ]] || continue
-                  KIND=$(grep -m1 '^kind:' "${f}" | awk '{print $2}')
-                  if [[ "${KIND}" == "ClusterServiceVersion" ]]; then
-                    CSV_FILE="${f}"
-                    break
-                  fi
-                done
-              fi
-
-              if [[ -z "${CSV_FILE}" ]]; then
-                echo "ERROR: No CSV found in extracted manifests" >&2
-                ls -la "${MANIFESTS_DIR}/"
-                exit 1
-              fi
-
-              CSV_NAME=$(grep -m1 '^  name:' "${CSV_FILE}" | awk '{print $2}')
-
-              # Use namespace from CSV if it specifies one
-              CSV_NS=$(grep -m1 '^  namespace:' "${CSV_FILE}" | awk '{print $2}')
-              if [[ -n "${CSV_NS}" && "${CSV_NS}" != "${INSTALL_NAMESPACE}" ]]; then
-                echo "[$(date -u +%FT%T.%3NZ)] CSV specifies namespace '${CSV_NS}', using that instead of '${INSTALL_NAMESPACE}'"
-                INSTALL_NAMESPACE="${CSV_NS}"
-                oc create namespace "${INSTALL_NAMESPACE}" 2>/dev/null || true
-                echo -n "${INSTALL_NAMESPACE}" > /workspace/install-namespace
-
-                # Ensure OperatorGroup exists in the correct namespace (OwnNamespace mode)
-                EXISTING_OG=$(oc -n "${INSTALL_NAMESPACE}" get operatorgroup -o jsonpath="{.items[*].metadata.name}" 2>/dev/null || true)
-                if [[ -z "${EXISTING_OG}" ]]; then
-                  oc create -f - <<OG2_EOF
-              apiVersion: operators.coreos.com/v1
-              kind: OperatorGroup
+              # CatalogSource (FBC fragment from quay.io)
+              CATSRC=$(oc create -f - -o jsonpath='{.metadata.name}' <<CS_EOF
+              apiVersion: operators.coreos.com/v1alpha1
+              kind: CatalogSource
               metadata:
                 generateName: oo-
                 namespace: ${INSTALL_NAMESPACE}
               spec:
-                targetNamespaces:
-                  - ${INSTALL_NAMESPACE}
-              OG2_EOF
-                fi
-              fi
+                sourceType: grpc
+                image: ${FBC_FRAGMENT}
+                displayName: "Certsuite Test Catalog"
+                publisher: "konflux-certsuite"
+              CS_EOF
+              )
+              echo "[$(date -u +%FT%T.%3NZ)] CatalogSource: ${CATSRC}"
 
-              # Patch CSV: remove minKubeVersion (EaaS may not have the required version yet)
-              if grep -q 'minKubeVersion' "${CSV_FILE}"; then
-                echo "[$(date -u +%FT%T.%3NZ)] Removing minKubeVersion requirement from CSV..."
-                sed -i '/minKubeVersion/d' "${CSV_FILE}"
-              fi
+              # Wait for CatalogSource READY
+              for i in $(seq 1 60); do
+                STATE=$(oc get catalogsource "${CATSRC}" -n "${INSTALL_NAMESPACE}" \
+                  -o jsonpath='{.status.connectionState.lastObservedState}' 2>/dev/null || echo "")
+                [[ "${STATE}" == "READY" ]] && break
+                [[ ${i} -eq 60 ]] && { echo "ERROR: CatalogSource not ready"; oc get catalogsource "${CATSRC}" -n "${INSTALL_NAMESPACE}" -o yaml >&2; exit 1; }
+                sleep 10
+              done
 
-              # Patch CSV: remove master nodeSelector (Hypershift has no schedulable masters)
-              if grep -q 'node-role.kubernetes.io/master' "${CSV_FILE}"; then
-                echo "[$(date -u +%FT%T.%3NZ)] Removing master nodeSelector (not available on Hypershift)..."
-                sed -i '/node-role.kubernetes.io\/master/d' "${CSV_FILE}"
-                # Clean up empty nodeSelector block
-                sed -i '/^\s*nodeSelector:\s*$/d' "${CSV_FILE}"
-              fi
+              # Get bundle name for startingCSV
+              BUNDLE_NAME=$(echo "${bundle_render_out}" | jq -r 'select(.schema == "olm.bundle") | .name' | head -1)
+              echo "[$(date -u +%FT%T.%3NZ)] Bundle/startingCSV: ${BUNDLE_NAME}"
 
-              # Patch CSV: replace registry.redhat.io images with quay.io equivalents
-              echo "[$(date -u +%FT%T.%3NZ)] Patching image references in CSV..."
+              # Pre-create ServiceAccounts and grant cluster-admin (OLM checks RBAC)
+              MANIFESTS_DIR="/tmp/bundle-manifests"
+              mkdir -p "${MANIFESTS_DIR}"
+              oc image extract "${RENDER_IMAGE}" --path /manifests/:${MANIFESTS_DIR}/ --confirm 2>&1 || true
+              for SA in $(grep -h 'serviceAccountName:' "${MANIFESTS_DIR}"/*.yaml 2>/dev/null | awk '{print $2}' | sort -u); do
+                oc create serviceaccount "${SA}" -n "${INSTALL_NAMESPACE}" 2>/dev/null || true
+                oc adm policy add-cluster-role-to-user cluster-admin -z "${SA}" -n "${INSTALL_NAMESPACE}" 2>/dev/null || true
+              done
+
+              # Subscription
+              SUB=$(oc create -f - -o jsonpath='{.metadata.name}' <<SUB_EOF
+              apiVersion: operators.coreos.com/v1alpha1
+              kind: Subscription
+              metadata:
+                generateName: oo-
+                namespace: ${INSTALL_NAMESPACE}
+              spec:
+                channel: ${CHANNEL_NAME}
+                installPlanApproval: Automatic
+                name: ${PACKAGE_NAME}
+                source: ${CATSRC}
+                sourceNamespace: ${INSTALL_NAMESPACE}
+                startingCSV: ${BUNDLE_NAME}
+              SUB_EOF
+              )
+              echo "[$(date -u +%FT%T.%3NZ)] Subscription: ${SUB}"
+
+              # Wait for OLM to create the CSV
+              echo "[$(date -u +%FT%T.%3NZ)] Waiting for OLM to create CSV..."
+              CSV_NAME=""
+              for i in $(seq 1 60); do
+                CSV_NAME=$(oc get subscription "${SUB}" -n "${INSTALL_NAMESPACE}" \
+                  -o jsonpath='{.status.installedCSV}' 2>/dev/null || echo "")
+                [[ -n "${CSV_NAME}" ]] && break
+                sleep 5
+              done
+
+              if [[ -z "${CSV_NAME}" ]]; then
+                echo "ERROR: OLM did not create a CSV" >&2
+                oc get subscription "${SUB}" -n "${INSTALL_NAMESPACE}" -o yaml >&2
+                oc get installplan -n "${INSTALL_NAMESPACE}" -o yaml >&2 || true
+                exit 1
+              fi
+              echo "[$(date -u +%FT%T.%3NZ)] CSV created: ${CSV_NAME}"
+
+              # ── Patch the CSV in-place ──────────────────────────────────────
+              CSV_JSON=$(oc get csv "${CSV_NAME}" -n "${INSTALL_NAMESPACE}" -o json)
+
+              # Remove minKubeVersion
+              CSV_JSON=$(echo "${CSV_JSON}" | jq 'del(.spec.minKubeVersion)')
+
+              # Remove master nodeSelector
+              CSV_JSON=$(echo "${CSV_JSON}" | jq '
+                (.spec.install.spec.deployments[]?.spec.template.spec.nodeSelector) |=
+                  (if . then del(.["node-role.kubernetes.io/master"]) else . end)')
+
+              # Add certsuite labels to deployment pod templates
+              CSV_JSON=$(echo "${CSV_JSON}" | jq '
+                (.spec.install.spec.deployments[]?.spec.template.metadata.labels) +=
+                  {"redhat-best-practices-for-k8s.com/generic": "target",
+                   "redhat-best-practices-for-k8s.com/operator": "target"}')
+
+              # Patch image references
+              echo "[$(date -u +%FT%T.%3NZ)] Patching image references..."
               FBC_BASE="${FBC_FRAGMENT%%@*}"
               TENANT_AND_REPO="${FBC_BASE#quay.io/redhat-user-workloads/}"
               TENANT="${TENANT_AND_REPO%%/*}"
               QUAY_BASE="quay.io/redhat-user-workloads/${TENANT}"
               COMPONENT_REPOS="$(params.componentRepos)"
+              REPOS="${COMPONENT_REPOS}"
 
-              # Use provided COMPONENT_REPOS param, or discover automatically
-              if [[ -n "${COMPONENT_REPOS}" ]]; then
-                REPOS="${COMPONENT_REPOS}"
-                echo "[$(date -u +%FT%T.%3NZ)] Using provided component repos: ${REPOS}"
-              else
-                echo "[$(date -u +%FT%T.%3NZ)] No COMPONENT_REPOS provided, trying auto-discovery..."
-                REPOS=$(curl -s "https://quay.io/api/v1/find/repositories?query=${TENANT}&page=1&includeUsage=false" 2>/dev/null | \
-                  jq -r --arg tenant "${TENANT}" \
-                  '.results[]? | select(.namespace == "redhat-user-workloads" and (.name | startswith($tenant + "/"))) | .name' 2>/dev/null | \
-                  sed "s|^${TENANT}/||" || echo "")
-
-                if [[ -z "${REPOS}" ]]; then
-                  echo "[$(date -u +%FT%T.%3NZ)] Auto-discovery failed. Set COMPONENT_REPOS param for reliable resolution."
-                  REPOS=$(echo "${SNAPSHOT}" | jq -r '.components[]? | .containerImage' 2>/dev/null | \
-                    sed "s|${QUAY_BASE}/||" | sed 's|@.*||' || echo "")
-                fi
-              fi
-
-              echo "[$(date -u +%FT%T.%3NZ)] Available repos: ${REPOS}"
-
-              # For each registry.redhat.io image in the CSV, try to find in quay.io
-              IMAGES=$(grep -oP 'registry\.redhat\.io/[^"[:space:]]+@sha256:[a-f0-9]+' "${CSV_FILE}" | sort -u)
+              IMAGES=$(echo "${CSV_JSON}" | grep -oP 'registry\.redhat\.io/[^"]+@sha256:[a-f0-9]+' | sort -u)
               for IMG in ${IMAGES}; do
                 DIGEST="${IMG##*@}"
-                echo "  Resolving: ${IMG}"
-
                 RESOLVED=""
                 for REPO in ${REPOS}; do
                   CANDIDATE="${QUAY_BASE}/${REPO}@${DIGEST}"
@@ -580,38 +556,29 @@ spec:
                     break
                   fi
                 done
-
                 if [[ -n "${RESOLVED}" ]]; then
-                  echo "    -> ${RESOLVED}"
-                  sed -i "s|${IMG}|${RESOLVED}|g" "${CSV_FILE}"
+                  echo "  ${IMG} -> ${RESOLVED}"
+                  CSV_JSON=$(echo "${CSV_JSON}" | sed "s|${IMG}|${RESOLVED}|g")
+                elif echo "${IMG}" | grep -q "kube-rbac-proxy"; then
+                  FALLBACK="quay.io/brancz/kube-rbac-proxy:v0.18.1"
+                  echo "  ${IMG} -> ${FALLBACK}"
+                  CSV_JSON=$(echo "${CSV_JSON}" | sed "s|${IMG}|${FALLBACK}|g")
                 else
-                  # For kube-rbac-proxy: use a known public image as fallback
-                  if echo "${IMG}" | grep -q "kube-rbac-proxy"; then
-                    FALLBACK="quay.io/brancz/kube-rbac-proxy:v0.18.1"
-                    echo "    -> Using public fallback: ${FALLBACK}"
-                    sed -i "s|${IMG}|${FALLBACK}|g" "${CSV_FILE}"
-                  else
-                    echo "    -> NOT FOUND in quay.io (leaving as-is)"
-                  fi
+                  echo "  ${IMG} -> NOT FOUND (leaving as-is)"
                 fi
               done
 
-              # Add certsuite discovery labels to CSV deployment pod templates
-              echo "[$(date -u +%FT%T.%3NZ)] Adding certsuite labels to CSV deployment templates..."
-              CERT_PREFIX="redhat-best-practices-for-k8s.com"
-              if grep -q 'role:' "${CSV_FILE}"; then
-                sed -i "0,/role:/s|role:.*|&\n                ${CERT_PREFIX}/generic: target\n                ${CERT_PREFIX}/operator: target|" "${CSV_FILE}"
-              fi
+              # Apply patched CSV
+              echo "[$(date -u +%FT%T.%3NZ)] Applying patched CSV..."
+              echo "${CSV_JSON}" | oc apply -f - 2>&1
 
-              # Pre-create ServiceAccounts and grant cluster-admin (OLM requires RBAC to be present)
-              for SA in $(grep 'serviceAccountName:' "${CSV_FILE}" | awk '{print $2}' | sort -u); do
-                oc create serviceaccount "${SA}" -n "${INSTALL_NAMESPACE}" 2>/dev/null || true
-                oc adm policy add-cluster-role-to-user cluster-admin -z "${SA}" -n "${INSTALL_NAMESPACE}" 2>/dev/null || true
+              # Delete Deployment(s) so OLM recreates from patched CSV
+              echo "[$(date -u +%FT%T.%3NZ)] Deleting operator Deployment(s) to force recreation..."
+              for DEP_NAME in $(echo "${CSV_JSON}" | jq -r '.spec.install.spec.deployments[]?.name'); do
+                oc delete deployment "${DEP_NAME}" -n "${INSTALL_NAMESPACE}" --ignore-not-found 2>&1
               done
 
-              echo "[$(date -u +%FT%T.%3NZ)] Applying CSV '${CSV_NAME}' to namespace ${INSTALL_NAMESPACE}..."
-              oc apply -n "${INSTALL_NAMESPACE}" -f "${CSV_FILE}" 2>&1
-
+              # Wait for CSV Succeeded
               echo "[$(date -u +%FT%T.%3NZ)] Waiting for CSV '${CSV_NAME}' phase=Succeeded..."
               for i in $(seq 1 90); do
                 PHASE=$(oc get csv "${CSV_NAME}" -n "${INSTALL_NAMESPACE}" \
@@ -628,14 +595,8 @@ spec:
               done
 
               echo "ERROR: Timed out waiting for CSV '${CSV_NAME}' (phase=${PHASE})" >&2
-              echo "=== CSV Status ===" >&2
-              oc get csv "${CSV_NAME}" -n "${INSTALL_NAMESPACE}" -o jsonpath='{.status}' 2>&1 | jq . >&2 || true
-              echo "=== Pods ===" >&2
-              oc get pods -n "${INSTALL_NAMESPACE}" -o wide 2>&1 >&2 || true
-              echo "=== Pod Events ===" >&2
-              oc get events -n "${INSTALL_NAMESPACE}" --sort-by='.lastTimestamp' 2>&1 | tail -30 >&2 || true
-              echo "=== ImagePullBackOff Details ===" >&2
-              oc get pods -n "${INSTALL_NAMESPACE}" -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{range .status.containerStatuses[*]}{.state.waiting.reason}{": "}{.state.waiting.message}{"\n"}{end}{end}' 2>&1 >&2 || true
+              oc get pods -n "${INSTALL_NAMESPACE}" -o wide >&2 || true
+              oc get events -n "${INSTALL_NAMESPACE}" --sort-by='.lastTimestamp' 2>&1 | tail -20 >&2 || true
               exit 1
 
           # ── Step 3: Deploy operands from test bundle ─────────────────
