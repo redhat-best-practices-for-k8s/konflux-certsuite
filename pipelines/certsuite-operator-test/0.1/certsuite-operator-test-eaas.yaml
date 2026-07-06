@@ -535,6 +535,10 @@ spec:
               echo "[$(date -u +%FT%T.%3NZ)] Applying CSV '${CSV_NAME}'..."
               oc apply -n "${INSTALL_NAMESPACE}" -f "${CSV_FILE}" 2>&1
 
+              # Add operator label to CSV metadata (certsuite searches CSVs by metadata label)
+              oc label csv "${CSV_NAME}" -n "${INSTALL_NAMESPACE}" \
+                "redhat-best-practices-for-k8s.com/operator=target" --overwrite 2>&1 || true
+
               # Wait for CSV Succeeded
               echo "[$(date -u +%FT%T.%3NZ)] Waiting for CSV phase=Succeeded..."
               for i in $(seq 1 90); do
