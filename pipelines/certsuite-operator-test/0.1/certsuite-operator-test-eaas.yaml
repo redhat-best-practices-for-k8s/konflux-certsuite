@@ -735,14 +735,15 @@ spec:
               #!/usr/bin/env bash
               set -euo pipefail
 
-              # Force certsuite to use KUBECONFIG instead of in-cluster config
+              # Force certsuite to use the EaaS cluster kubeconfig
               unset KUBERNETES_SERVICE_HOST KUBERNETES_SERVICE_PORT
+              mkdir -p ~/.kube
+              cp "${KUBECONFIG}" ~/.kube/config
+              export KUBECONFIG=~/.kube/config
 
-              # Verify kubeconfig is accessible
               echo "[$(date -u +%FT%T.%3NZ)] KUBECONFIG=${KUBECONFIG}"
               if [[ ! -f "${KUBECONFIG}" ]]; then
                 echo "ERROR: Kubeconfig file not found at ${KUBECONFIG}" >&2
-                ls -la /credentials/ >&2
                 exit 1
               fi
               INSTALL_NS=""
