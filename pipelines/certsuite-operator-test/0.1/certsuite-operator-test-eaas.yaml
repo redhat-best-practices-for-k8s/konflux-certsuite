@@ -524,6 +524,12 @@ spec:
                 fi
               done
 
+              # Add certsuite discovery labels to deployment pod template in CSV
+              CERT_PREFIX="redhat-best-practices-for-k8s.com"
+              if grep -q 'role:' "${CSV_FILE}"; then
+                sed -i "0,/role:/s|role:.*|&\n                ${CERT_PREFIX}/generic: target\n                ${CERT_PREFIX}/operator: target|" "${CSV_FILE}"
+              fi
+
               # Apply patched CSV
               CSV_NAME=$(grep -m1 '^  name:' "${CSV_FILE}" | awk '{print $2}')
               echo "[$(date -u +%FT%T.%3NZ)] Applying CSV '${CSV_NAME}'..."
