@@ -596,6 +596,20 @@ spec:
                 fi
               done
 
+              # Add certsuite discovery labels to CSV deployment pod templates
+              echo "[$(date -u +%FT%T.%3NZ)] Adding certsuite labels to CSV deployment templates..."
+              python3 -c "
+import yaml, sys
+with open(sys.argv[1], 'r') as f:
+    csv = yaml.safe_load(f)
+for dep in csv.get('spec', {}).get('install', {}).get('spec', {}).get('deployments', []):
+    labels = dep.get('spec', {}).get('template', {}).get('metadata', {}).get('labels', {})
+    labels['redhat-best-practices-for-k8s.com/generic'] = 'target'
+    labels['redhat-best-practices-for-k8s.com/operator'] = 'target'
+with open(sys.argv[1], 'w') as f:
+    yaml.dump(csv, f, default_flow_style=False)
+" "${CSV_FILE}" 2>/dev/null || echo "  WARNING: Could not inject certsuite labels into CSV (python3/yaml not available)"
+
               # Pre-create ServiceAccounts and grant cluster-admin (OLM requires RBAC to be present)
               for SA in $(grep 'serviceAccountName:' "${CSV_FILE}" | awk '{print $2}' | sort -u); do
                 oc create serviceaccount "${SA}" -n "${INSTALL_NAMESPACE}" 2>/dev/null || true
@@ -708,26 +722,13 @@ spec:
               echo "[$(date -u +%FT%T.%3NZ)] Waiting 60s for operator to reconcile..."
               sleep 60
 
-              # Label workloads and pods for certsuite discovery
-              echo "[$(date -u +%FT%T.%3NZ)] Labeling workloads for certsuite..."
-
-              # Patch Deployment pod template with certsuite labels
-              for DEP in $(oc get deployments -n "${TARGET_NS}" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
-                oc patch deployment "${DEP}" -n "${TARGET_NS}" --type=merge -p \
-                  '{"spec":{"template":{"metadata":{"labels":{"redhat-best-practices-for-k8s.com/generic":"target","redhat-best-practices-for-k8s.com/operator":"target"}}}}}' 2>&1 || true
-              done
-
-              # Patch DaemonSet pod template with certsuite labels
+              # Label DaemonSet pods for certsuite (DaemonSets are not managed by OLM)
+              echo "[$(date -u +%FT%T.%3NZ)] Labeling DaemonSet pods for certsuite..."
               for DS in $(oc get daemonsets -n "${TARGET_NS}" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
                 oc patch daemonset "${DS}" -n "${TARGET_NS}" --type=merge -p \
                   '{"spec":{"template":{"metadata":{"labels":{"redhat-best-practices-for-k8s.com/generic":"target"}}}}}' 2>&1 || true
               done
-
-              # Wait for rollout after patching
-              echo "[$(date -u +%FT%T.%3NZ)] Waiting for rollouts after labeling..."
-              for DEP in $(oc get deployments -n "${TARGET_NS}" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
-                oc rollout status "deployment/${DEP}" -n "${TARGET_NS}" --timeout=120s 2>&1 || true
-              done
+              # Wait for DaemonSet rollout
               for DS in $(oc get daemonsets -n "${TARGET_NS}" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
                 oc rollout status "daemonset/${DS}" -n "${TARGET_NS}" --timeout=120s 2>&1 || true
               done
