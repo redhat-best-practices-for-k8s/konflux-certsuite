@@ -766,34 +766,26 @@ spec:
 
               CONFIG_ARGS="--config-file ${CONFIG_FILE} --kubeconfig ${KUBECONFIG}"
 
+              # Default to "common" label filter (certsuite skips all if no filter is set)
               if [[ -z "${CERTSUITE_LABELS}" ]]; then
-                SUITE_DIR="${RESULTS_DIR}/all"
-                mkdir -p "${SUITE_DIR}"
-                echo "[$(date -u +%FT%T.%3NZ)] Running all certsuite tests"
+                CERTSUITE_LABELS="common"
+              fi
 
+              IFS=',' read -ra LABELS <<< "${CERTSUITE_LABELS}"
+              for LABEL in "${LABELS[@]}"; do
+                LABEL=$(echo "${LABEL}" | xargs)
+                SUITE_DIR="${RESULTS_DIR}/${LABEL}"
+                mkdir -p "${SUITE_DIR}"
+
+                echo "[$(date -u +%FT%T.%3NZ)] Running: ${LABEL} (label-filter=${LABEL})"
                 set +e
                 certsuite run \
+                  --label-filter "${LABEL}" \
                   --output-dir "${SUITE_DIR}" \
                   ${CONFIG_ARGS} \
                   2>&1 | tee "${SUITE_DIR}/certsuite.log"
                 set -e
-              else
-                IFS=',' read -ra LABELS <<< "${CERTSUITE_LABELS}"
-                for LABEL in "${LABELS[@]}"; do
-                  LABEL=$(echo "${LABEL}" | xargs)
-                  SUITE_DIR="${RESULTS_DIR}/${LABEL}"
-                  mkdir -p "${SUITE_DIR}"
-
-                  echo "[$(date -u +%FT%T.%3NZ)] Running: ${LABEL}"
-                  set +e
-                  certsuite run \
-                    --label-filter "${LABEL}" \
-                    --output-dir "${SUITE_DIR}" \
-                    ${CONFIG_ARGS} \
-                    2>&1 | tee "${SUITE_DIR}/certsuite.log"
-                  set -e
-                done
-              fi
+              done
 
               # Print discovery results from debug log
               echo "[$(date -u +%FT%T.%3NZ)] === Discovery Log (first 50 lines) ==="
