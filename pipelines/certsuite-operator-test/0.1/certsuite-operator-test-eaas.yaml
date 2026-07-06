@@ -794,6 +794,10 @@ spec:
               ls -la /workspace/test-bundle/ 2>&1 || true
               echo "==========================="
 
+              # Copy config to certsuite's default location
+              mkdir -p config
+              cp "${CONFIG_FILE}" config/certsuite_config.yml
+
               CONFIG_ARGS="--config-file ${CONFIG_FILE} --kubeconfig ${KUBECONFIG}"
 
               if [[ -z "${CERTSUITE_LABELS}" ]]; then
@@ -824,6 +828,11 @@ spec:
                   set -e
                 done
               fi
+
+              # Print discovery results from debug log
+              echo "[$(date -u +%FT%T.%3NZ)] === Discovery Log (first 50 lines) ==="
+              grep -i -A2 "discovery\|found\|pod\|label\|namespace\|config" "${RESULTS_DIR}"/*/certsuite.log 2>/dev/null | head -50 || true
+              echo "==========================="
 
               # Print summary
               for CLAIM in "${RESULTS_DIR}"/*/claim.json; do
