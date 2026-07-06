@@ -766,9 +766,9 @@ spec:
 
               CONFIG_ARGS="--config-file ${CONFIG_FILE} --kubeconfig ${KUBECONFIG}"
 
-              # Default to "common" label filter (certsuite skips all if no filter is set)
+              # Default to "common,telco" label filter (certsuite skips all if no filter is set)
               if [[ -z "${CERTSUITE_LABELS}" ]]; then
-                CERTSUITE_LABELS="common"
+                CERTSUITE_LABELS="common,telco"
               fi
 
               IFS=',' read -ra LABELS <<< "${CERTSUITE_LABELS}"
