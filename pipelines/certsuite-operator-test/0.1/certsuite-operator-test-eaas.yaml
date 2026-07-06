@@ -746,6 +746,18 @@ spec:
                 echo "ERROR: Kubeconfig file not found at ${KUBECONFIG}" >&2
                 exit 1
               fi
+
+              # Debug: check if in-cluster SA token exists
+              if [[ -f /var/run/secrets/kubernetes.io/serviceaccount/token ]]; then
+                echo "[$(date -u +%FT%T.%3NZ)] WARNING: In-cluster SA token exists, removing to prevent interference"
+                rm -f /var/run/secrets/kubernetes.io/serviceaccount/token 2>/dev/null || \
+                  echo "[$(date -u +%FT%T.%3NZ)] Cannot remove SA token (read-only), overriding via HOME"
+              fi
+
+              # Debug: show kubeconfig server
+              echo "[$(date -u +%FT%T.%3NZ)] Kubeconfig server: $(grep -m1 'server:' ~/.kube/config | awk '{print $2}')"
+              echo "[$(date -u +%FT%T.%3NZ)] Kubeconfig user: $(grep -m1 'name:' ~/.kube/config | awk '{print $2}')"
+
               INSTALL_NS=""
               [[ -f /workspace/install-namespace ]] && INSTALL_NS=$(cat /workspace/install-namespace)
 
@@ -769,6 +781,13 @@ spec:
                 echo "[$(date -u +%FT%T.%3NZ)] Generated config:"
                 cat "${CONFIG_FILE}"
               fi
+
+              # Debug: show the config being used
+              echo "[$(date -u +%FT%T.%3NZ)] === Certsuite Config ==="
+              cat "${CONFIG_FILE}"
+              echo "[$(date -u +%FT%T.%3NZ)] === Test Bundle Contents ==="
+              ls -la /workspace/test-bundle/ 2>&1 || true
+              echo "==========================="
 
               CONFIG_ARGS="--config-file ${CONFIG_FILE} --kubeconfig ${KUBECONFIG}"
 
