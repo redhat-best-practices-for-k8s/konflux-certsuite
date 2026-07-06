@@ -598,17 +598,10 @@ spec:
 
               # Add certsuite discovery labels to CSV deployment pod templates
               echo "[$(date -u +%FT%T.%3NZ)] Adding certsuite labels to CSV deployment templates..."
-              python3 -c "
-import yaml, sys
-with open(sys.argv[1], 'r') as f:
-    csv = yaml.safe_load(f)
-for dep in csv.get('spec', {}).get('install', {}).get('spec', {}).get('deployments', []):
-    labels = dep.get('spec', {}).get('template', {}).get('metadata', {}).get('labels', {})
-    labels['redhat-best-practices-for-k8s.com/generic'] = 'target'
-    labels['redhat-best-practices-for-k8s.com/operator'] = 'target'
-with open(sys.argv[1], 'w') as f:
-    yaml.dump(csv, f, default_flow_style=False)
-" "${CSV_FILE}" 2>/dev/null || echo "  WARNING: Could not inject certsuite labels into CSV (python3/yaml not available)"
+              CERT_PREFIX="redhat-best-practices-for-k8s.com"
+              if grep -q 'role:' "${CSV_FILE}"; then
+                sed -i "0,/role:/s|role:.*|&\n                ${CERT_PREFIX}/generic: target\n                ${CERT_PREFIX}/operator: target|" "${CSV_FILE}"
+              fi
 
               # Pre-create ServiceAccounts and grant cluster-admin (OLM requires RBAC to be present)
               for SA in $(grep 'serviceAccountName:' "${CSV_FILE}" | awk '{print $2}' | sort -u); do
