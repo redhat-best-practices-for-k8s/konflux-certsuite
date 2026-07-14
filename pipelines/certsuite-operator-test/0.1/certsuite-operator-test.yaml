@@ -175,6 +175,7 @@ spec:
       taskSpec:
         results:
           - name: unreleasedBundle
+            value: "$(steps.get-bundle.results.unreleasedBundle)"
           - name: packageName
             value: "$(steps.get-bundle.results.packageName)"
           - name: channelName
