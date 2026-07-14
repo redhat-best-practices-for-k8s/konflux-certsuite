@@ -490,7 +490,7 @@ spec:
               done
               echo "[$(date -u +%FT%T.%3NZ)] CatalogSource ${CATSRC} READY"
 
-              # ── Subscription (Automatic — OLM creates CSV + SAs + RBAC) ────
+              # ── Subscription (Manual — approve InstallPlan explicitly) ──────
               SUB=$(oc create -f - -o jsonpath='{.metadata.name}' <<SUB_EOF
               apiVersion: operators.coreos.com/v1alpha1
               kind: Subscription
@@ -499,13 +499,31 @@ spec:
                 namespace: ${INSTALL_NAMESPACE}
               spec:
                 channel: ${CHANNEL_NAME}
-                installPlanApproval: Automatic
+                installPlanApproval: Manual
                 name: ${PACKAGE_NAME}
                 source: ${CATSRC}
                 sourceNamespace: ${INSTALL_NAMESPACE}
                 startingCSV: ${BUNDLE_NAME}
               SUB_EOF
               )
+
+              # Wait for InstallPlan, then approve it
+              echo "[$(date -u +%FT%T.%3NZ)] Waiting for InstallPlan..."
+              IP=""
+              for i in $(seq 1 60); do
+                IP=$(oc get subscription "${SUB}" -n "${INSTALL_NAMESPACE}" \
+                  -o jsonpath='{.status.installPlanRef.name}' 2>/dev/null || echo "")
+                [[ -n "${IP}" ]] && break
+                sleep 5
+              done
+              if [[ -z "${IP}" ]]; then
+                echo "ERROR: No InstallPlan created" >&2
+                oc get subscription "${SUB}" -n "${INSTALL_NAMESPACE}" -o yaml >&2
+                exit 1
+              fi
+              echo "[$(date -u +%FT%T.%3NZ)] Approving InstallPlan ${IP}..."
+              oc patch installplan "${IP}" -n "${INSTALL_NAMESPACE}" \
+                --type merge -p '{"spec":{"approved":true}}' 2>&1
 
               # Wait for OLM to create CSV
               echo "[$(date -u +%FT%T.%3NZ)] Waiting for OLM to create CSV..."
@@ -514,9 +532,13 @@ spec:
                 CSV=$(oc get subscription "${SUB}" -n "${INSTALL_NAMESPACE}" \
                   -o jsonpath='{.status.installedCSV}' 2>/dev/null || echo "")
                 [[ -n "${CSV}" ]] && break
-                [[ ${i} -eq 60 ]] && { echo "ERROR: OLM did not create CSV" >&2; exit 1; }
                 sleep 5
               done
+              if [[ -z "${CSV}" ]]; then
+                echo "ERROR: OLM did not create CSV" >&2
+                oc get subscription "${SUB}" -n "${INSTALL_NAMESPACE}" -o yaml >&2
+                exit 1
+              fi
               echo "[$(date -u +%FT%T.%3NZ)] CSV created: ${CSV}"
 
               # ── Dynamically resolve registry.redhat.io images to quay.io ───
@@ -590,6 +612,25 @@ spec:
                 exit 1
               fi
               echo "[$(date -u +%FT%T.%3NZ)] Operator installed successfully"
+
+              # ── Certsuite discovery labels ───────────────────────────────────
+              # Patch Subscription status so certsuite can discover the operator
+              oc patch subscription "${SUB}" -n "${INSTALL_NAMESPACE}" \
+                --type merge --subresource status \
+                -p "{\"status\":{\"installedCSV\":\"${CSV}\"}}" 2>&1
+
+              # Label CSV for certsuite operator discovery
+              oc label csv "${CSV}" -n "${INSTALL_NAMESPACE}" \
+                "redhat-best-practices-for-k8s.com/operator=target" --overwrite 2>&1
+
+              # Label DaemonSet pods for certsuite pod discovery
+              DS_NAMES=$(oc get daemonsets -n "${INSTALL_NAMESPACE}" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
+              for DS in ${DS_NAMES}; do
+                echo "[$(date -u +%FT%T.%3NZ)] Patching DaemonSet ${DS} with certsuite labels..."
+                oc patch daemonset "${DS}" -n "${INSTALL_NAMESPACE}" --type=merge \
+                  -p '{"spec":{"template":{"metadata":{"labels":{"redhat-best-practices-for-k8s.com/generic":"target"}}}}}' 2>&1
+                oc rollout status daemonset/"${DS}" -n "${INSTALL_NAMESPACE}" --timeout=120s 2>&1 || true
+              done
 
           # ── Step 3: Deploy operands from test bundle ─────────────────
           - name: deploy-operands
@@ -703,14 +744,9 @@ spec:
               mkdir -p "${RESULTS_DIR}"
 
               if [[ ! -f "${CONFIG_FILE}" ]]; then
-                echo "WARNING: No certsuite_config.yml in test bundle. Generating default."
-                INSTALL_NS=""
-                [[ -f /workspace/install-namespace ]] && INSTALL_NS=$(cat /workspace/install-namespace)
-                INSTALL_NS="${INSTALL_NS:-default}"
-                printf 'targetNameSpaces:\n  - name: "%s"\ntargetCrdFilters:\n  - nameSuffix: "ptp.openshift.io"\n' \
-                  "${INSTALL_NS}" > "${CONFIG_FILE}"
-                echo "  Generated config for namespace: ${INSTALL_NS}"
-                cat "${CONFIG_FILE}"
+                echo "ERROR: certsuite_config.yml not found in test bundle" >&2
+                echo "Each operator test bundle must include a certsuite_config.yml" >&2
+                exit 1
               fi
 
               # Copy to certsuite's default location as well

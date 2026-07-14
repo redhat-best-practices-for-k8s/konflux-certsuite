@@ -1,0 +1,12 @@
+targetNameSpaces:
+  - name: openshift-ptp
+
+podsUnderTestLabels:
+  - "redhat-best-practices-for-k8s.com/generic: target"
+
+operatorsUnderTestLabels:
+  - "redhat-best-practices-for-k8s.com/operator: target"
+
+targetCrdFilters:
+  - nameSuffix: "ptp.openshift.io"
+    scalable: false
