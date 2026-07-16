@@ -21,11 +21,15 @@ spec:
     - name: TEST_BUNDLE_REF
       type: string
       description: |
-        Git URL (with optional #path fragment) pointing to the operator's
-        certsuite test bundle.
+        Git URL pointing to the operator's certsuite test bundle.
+        Format: URL[.git@revision][#path]
+        Examples:
+          https://github.com/org/repo.git@main#tests/my-bundle
+          https://github.com/org/repo#tests/my-bundle
+          https://github.com/org/repo.git@fix/my-branch#tests/my-bundle
     - name: CERTSUITE_LABELS
       type: string
-      default: ""
+      default: "common"
       description: |
         Comma-separated certsuite test labels (e.g. "networking,lifecycle").
         When empty, all certsuite tests are run.
@@ -35,24 +39,11 @@ spec:
     - name: CHANNEL_NAME
       type: string
       default: ""
-    - name: CREDENTIALS_SECRET_NAME
-      type: string
-      default: ""
-      description: Secret for OCI registry credentials. Empty skips OCI push.
-    - name: OCI_REF
-      type: string
-      default: ""
-      description: OCI artifact reference for results. Empty skips OCI push.
-    - name: CERT_TRACK_URL
-      type: string
-      default: ""
-      description: Base URL of cert-track-results. Empty skips upload.
-    - name: CERT_TRACK_SECRET_NAME
-      type: string
-      default: ""
-    - name: CERT_TRACK_SECRET_KEY
-      type: string
-      default: "api-token"
+    # NOTE: CREDENTIALS_SECRET_NAME, OCI_REF, CERT_TRACK_* params are not
+    # included here because Konflux IntegrationTestScenarios do not provide
+    # pipeline-level workspace bindings needed by the collect-results task.
+    # Results collection should be added as a step inside deploy-and-test
+    # when needed.
 
   tasks:
     # ── 1. Parse Snapshot Metadata ──────────────────────────────────────
@@ -74,10 +65,6 @@ spec:
     - name: provision-eaas-space
       runAfter:
         - parse-metadata
-      when:
-        - input: $(tasks.parse-metadata.results.test-event-type)
-          operator: in
-          values: ["push", "Push"]
       taskRef:
         resolver: git
         params:
@@ -97,13 +84,10 @@ spec:
     - name: get-unreleased-bundle
       runAfter:
         - provision-eaas-space
-      when:
-        - input: $(tasks.parse-metadata.results.test-event-type)
-          operator: in
-          values: ["push", "Push"]
       taskSpec:
         results:
           - name: unreleasedBundle
+            value: "$(steps.get-bundle.results.unreleasedBundle)"
           - name: packageName
             value: "$(steps.get-bundle.results.packageName)"
           - name: channelName
@@ -141,9 +125,6 @@ spec:
         - input: "$(tasks.get-unreleased-bundle.results.unreleasedBundle)"
           operator: notin
           values: [""]
-        - input: $(tasks.parse-metadata.results.test-event-type)
-          operator: in
-          values: ["push", "Push"]
       taskSpec:
         results:
           - name: ocpVersion
@@ -191,7 +172,7 @@ spec:
                   value: stepactions/bundles/pick-cluster-arch/0.1/pick-cluster-arch.yaml
             params:
               - name: bundleImage
-                value: "$(tasks.get-unreleased-bundle.results.unreleasedBundle)"
+                value: "$(tasks.parse-metadata.results.component-container-image)"
 
     # ── 5. Provision Ephemeral Cluster ─────────────────────────────────
     - name: provision-cluster
@@ -207,9 +188,6 @@ spec:
         - input: "$(tasks.pick-cluster-params.results.bundleArch)"
           operator: notin
           values: [""]
-        - input: $(tasks.parse-metadata.results.test-event-type)
-          operator: in
-          values: ["push", "Push"]
       taskSpec:
         results:
           - name: clusterName
@@ -254,9 +232,6 @@ spec:
         - input: "$(tasks.get-unreleased-bundle.results.unreleasedBundle)"
           operator: notin
           values: [""]
-        - input: $(tasks.parse-metadata.results.test-event-type)
-          operator: in
-          values: ["push", "Push"]
       params:
         - name: eaasSpaceSecretRef
           value: $(tasks.provision-eaas-space.results.secretRef)
@@ -346,19 +321,53 @@ spec:
               echo "[$(date -u +%FT%T.%3NZ)] Deploying operator: package=${PACKAGE_NAME} channel=${CHANNEL_NAME}"
               oc whoami || { echo "ERROR: Cannot connect to cluster"; exit 1; }
 
-              if ! bundle_render_out=$(opm render "${BUNDLE_IMAGE}"); then
-                echo "ERROR: Failed to render bundle image" >&2
-                exit 1
-              fi
+              # ── Wait for at least one worker node to be Ready ──────────────
+              echo "[$(date -u +%FT%T.%3NZ)] Waiting for worker nodes..."
+              for i in $(seq 1 90); do
+                READY_NODES=$(oc get nodes --no-headers 2>/dev/null | grep -c ' Ready' || echo "0")
+                if [[ "${READY_NODES}" -gt 0 ]]; then
+                  echo "[$(date -u +%FT%T.%3NZ)] ${READY_NODES} node(s) Ready"
+                  break
+                fi
+                [[ ${i} -eq 90 ]] && { echo "ERROR: No nodes became Ready within 450s"; exit 1; }
+                sleep 5
+              done
 
-              # Determine install namespace
-              INSTALL_NAMESPACE=$(echo "${bundle_render_out}" | \
-                jq -r 'select(.schema == "olm.bundle") | .properties[]? |
-                select(.type == "olm.bundle.object") | .value.data' 2>/dev/null | \
-                base64 -d 2>/dev/null | \
-                jq -r 'select(.kind == "ClusterServiceVersion") |
-                .metadata.annotations["operatorframework.io/suggested-namespace"] // empty' 2>/dev/null | \
-                head -1)
+              # ── Render FBC and resolve bundle image ────────────────────────
+              echo "[$(date -u +%FT%T.%3NZ)] Rendering FBC fragment..."
+              opm render "${FBC_FRAGMENT}" > /tmp/fbc.json
+
+              BUNDLE_NAME=$(jq -r 'select(.schema == "olm.bundle") | .name' /tmp/fbc.json | head -1)
+              echo "[$(date -u +%FT%T.%3NZ)] Bundle name: ${BUNDLE_NAME}"
+
+              ORIG_BUNDLE_IMG=$(jq -r 'select(.schema == "olm.bundle") | .image' /tmp/fbc.json | head -1)
+              echo "[$(date -u +%FT%T.%3NZ)] Original bundle image: ${ORIG_BUNDLE_IMG}"
+
+              FBC_BASE="${FBC_FRAGMENT%%@*}"
+              TENANT_AND_REPO="${FBC_BASE#quay.io/redhat-user-workloads/}"
+              TENANT="${TENANT_AND_REPO%%/*}"
+              FBC_REPO="${TENANT_AND_REPO#*/}"
+              BUNDLE_DIGEST="${BUNDLE_IMAGE##*@}"
+              BUNDLE_REPO=$(echo "${FBC_REPO}" | sed 's/-fbc-/-bundle-mono-/')
+              QUAY_BUNDLE="quay.io/redhat-user-workloads/${TENANT}/${BUNDLE_REPO}@${BUNDLE_DIGEST}"
+
+              echo "[$(date -u +%FT%T.%3NZ)] Trying: ${QUAY_BUNDLE}"
+              if ! skopeo inspect --raw "docker://${QUAY_BUNDLE}" &>/dev/null; then
+                BUNDLE_REPO2=$(echo "${FBC_REPO}" | sed 's/-fbc-/-bundle-/')
+                QUAY_BUNDLE="quay.io/redhat-user-workloads/${TENANT}/${BUNDLE_REPO2}@${BUNDLE_DIGEST}"
+                echo "[$(date -u +%FT%T.%3NZ)] Trying: ${QUAY_BUNDLE}"
+                skopeo inspect --raw "docker://${QUAY_BUNDLE}" &>/dev/null || \
+                  { echo "ERROR: Cannot resolve bundle at quay.io"; exit 1; }
+              fi
+              echo "[$(date -u +%FT%T.%3NZ)] Resolved bundle: ${QUAY_BUNDLE}"
+
+              # Replace the bundle image in FBC (use actual image from FBC, not param)
+              sed "s|${ORIG_BUNDLE_IMG}|${QUAY_BUNDLE}|g" /tmp/fbc.json > /tmp/fbc-patched.json
+
+              # ── Determine install namespace from FBC metadata ──────────────
+              INSTALL_NAMESPACE=$(jq -r 'select(.schema == "olm.bundle") | .properties[]? |
+                select(.type == "olm.csv.metadata") | .value.annotations["operatorframework.io/suggested-namespace"] // empty' \
+                /tmp/fbc.json 2>/dev/null | grep -v '^$' | head -1)
 
               if [[ -z "${INSTALL_NAMESPACE}" || "${INSTALL_NAMESPACE}" == "null" ]]; then
                 INSTALL_NAMESPACE=$(oc create -f - -o jsonpath='{.metadata.name}' <<NS_EOF
@@ -375,7 +384,7 @@ spec:
               echo "[$(date -u +%FT%T.%3NZ)] Namespace: ${INSTALL_NAMESPACE}"
               echo -n "${INSTALL_NAMESPACE}" > /workspace/install-namespace
 
-              # OperatorGroup
+              # ── OperatorGroup (OwnNamespace) ───────────────────────────────
               EXISTING_OG=$(oc -n "${INSTALL_NAMESPACE}" get operatorgroup -o jsonpath="{.items[*].metadata.name}" 2>/dev/null || true)
               if [[ -z "${EXISTING_OG}" ]]; then
                 oc create -f - <<OG_EOF
@@ -385,11 +394,79 @@ spec:
                 generateName: oo-
                 namespace: ${INSTALL_NAMESPACE}
               spec:
-                targetNamespaces: []
+                targetNamespaces:
+                  - ${INSTALL_NAMESPACE}
               OG_EOF
               fi
 
-              # CatalogSource
+              # ── Deploy patched FBC catalog server (subPath mount) ──────────
+              echo "[$(date -u +%FT%T.%3NZ)] Creating patched FBC catalog..."
+              oc create configmap patched-fbc-catalog \
+                --from-file=catalog.json=/tmp/fbc-patched.json \
+                -n "${INSTALL_NAMESPACE}"
+
+              oc apply -f - <<CATALOG_SERVER_EOF
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata:
+                name: patched-fbc-server
+                namespace: ${INSTALL_NAMESPACE}
+              spec:
+                replicas: 1
+                selector:
+                  matchLabels:
+                    app: patched-fbc-server
+                template:
+                  metadata:
+                    labels:
+                      app: patched-fbc-server
+                  spec:
+                    containers:
+                      - name: opm
+                        image: ${FBC_FRAGMENT}
+                        command: ["/bin/opm", "serve", "/catalog"]
+                        ports:
+                          - containerPort: 50051
+                            name: grpc
+                        volumeMounts:
+                          - name: catalog
+                            mountPath: /catalog/catalog.json
+                            subPath: catalog.json
+                        readinessProbe:
+                          exec:
+                            command: ["/bin/grpc_health_probe", "-addr=:50051"]
+                          initialDelaySeconds: 5
+                          periodSeconds: 10
+                    volumes:
+                      - name: catalog
+                        configMap:
+                          name: patched-fbc-catalog
+              ---
+              apiVersion: v1
+              kind: Service
+              metadata:
+                name: patched-fbc-server
+                namespace: ${INSTALL_NAMESPACE}
+              spec:
+                selector:
+                  app: patched-fbc-server
+                ports:
+                  - port: 50051
+                    targetPort: 50051
+                    protocol: TCP
+              CATALOG_SERVER_EOF
+
+              echo "[$(date -u +%FT%T.%3NZ)] Waiting for catalog server..."
+              if ! oc rollout status deployment/patched-fbc-server -n "${INSTALL_NAMESPACE}" --timeout=300s; then
+                echo "ERROR: catalog server rollout failed" >&2
+                oc get pods -n "${INSTALL_NAMESPACE}" -l app=patched-fbc-server -o wide 2>&1 || true
+                POD=$(oc get pods -n "${INSTALL_NAMESPACE}" -l app=patched-fbc-server \
+                  -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+                [[ -n "${POD}" ]] && oc logs "${POD}" -n "${INSTALL_NAMESPACE}" --tail=20 2>&1 || true
+                exit 1
+              fi
+
+              # ── CatalogSource ──────────────────────────────────────────────
               CATSRC=$(oc create -f - -o jsonpath='{.metadata.name}' <<CS_EOF
               apiVersion: operators.coreos.com/v1alpha1
               kind: CatalogSource
@@ -398,13 +475,12 @@ spec:
                 namespace: ${INSTALL_NAMESPACE}
               spec:
                 sourceType: grpc
-                image: ${FBC_FRAGMENT}
+                address: "patched-fbc-server.${INSTALL_NAMESPACE}.svc:50051"
                 displayName: "Certsuite Test Catalog"
                 publisher: "konflux-certsuite"
               CS_EOF
               )
 
-              # Wait for CatalogSource
               for i in $(seq 1 60); do
                 STATE=$(oc get catalogsource "${CATSRC}" -n "${INSTALL_NAMESPACE}" \
                   -o jsonpath='{.status.connectionState.lastObservedState}' 2>/dev/null || echo "")
@@ -412,10 +488,9 @@ spec:
                 [[ ${i} -eq 60 ]] && { echo "ERROR: CatalogSource not ready"; exit 1; }
                 sleep 10
               done
+              echo "[$(date -u +%FT%T.%3NZ)] CatalogSource ${CATSRC} READY"
 
-              # Bundle name + Subscription
-              BUNDLE_NAME=$(echo "${bundle_render_out}" | jq -r 'select(.schema == "olm.bundle") | .name' | head -1)
-
+              # ── Subscription (Manual — approve InstallPlan explicitly) ──────
               SUB=$(oc create -f - -o jsonpath='{.metadata.name}' <<SUB_EOF
               apiVersion: operators.coreos.com/v1alpha1
               kind: Subscription
@@ -424,7 +499,7 @@ spec:
                 namespace: ${INSTALL_NAMESPACE}
               spec:
                 channel: ${CHANNEL_NAME}
-                installPlanApproval: Automatic
+                installPlanApproval: Manual
                 name: ${PACKAGE_NAME}
                 source: ${CATSRC}
                 sourceNamespace: ${INSTALL_NAMESPACE}
@@ -432,27 +507,135 @@ spec:
               SUB_EOF
               )
 
-              # Wait for CSV
-              for i in $(seq 1 90); do
+              # Wait for InstallPlan, then approve it
+              echo "[$(date -u +%FT%T.%3NZ)] Waiting for InstallPlan..."
+              IP=""
+              for i in $(seq 1 60); do
+                IP=$(oc get subscription "${SUB}" -n "${INSTALL_NAMESPACE}" \
+                  -o jsonpath='{.status.installPlanRef.name}' 2>/dev/null || echo "")
+                [[ -n "${IP}" ]] && break
+                sleep 5
+              done
+              if [[ -z "${IP}" ]]; then
+                echo "ERROR: No InstallPlan created" >&2
+                oc get subscription "${SUB}" -n "${INSTALL_NAMESPACE}" -o yaml >&2
+                exit 1
+              fi
+              echo "[$(date -u +%FT%T.%3NZ)] Approving InstallPlan ${IP}..."
+              oc patch installplan "${IP}" -n "${INSTALL_NAMESPACE}" \
+                --type merge -p '{"spec":{"approved":true}}' 2>&1
+
+              # Wait for OLM to create CSV
+              echo "[$(date -u +%FT%T.%3NZ)] Waiting for OLM to create CSV..."
+              CSV=""
+              for i in $(seq 1 60); do
                 CSV=$(oc get subscription "${SUB}" -n "${INSTALL_NAMESPACE}" \
                   -o jsonpath='{.status.installedCSV}' 2>/dev/null || echo "")
-                if [[ -n "${CSV}" ]]; then
-                  PHASE=$(oc get csv "${CSV}" -n "${INSTALL_NAMESPACE}" \
-                    -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
-                  if [[ "${PHASE}" == "Succeeded" ]]; then
-                    echo "[$(date -u +%FT%T.%3NZ)] CSV '${CSV}' ready"
-                    exit 0
+                [[ -n "${CSV}" ]] && break
+                sleep 5
+              done
+              if [[ -z "${CSV}" ]]; then
+                echo "ERROR: OLM did not create CSV" >&2
+                oc get subscription "${SUB}" -n "${INSTALL_NAMESPACE}" -o yaml >&2
+                exit 1
+              fi
+              echo "[$(date -u +%FT%T.%3NZ)] CSV created: ${CSV}"
+
+              # ── Dynamically resolve registry.redhat.io images to quay.io ───
+              echo "[$(date -u +%FT%T.%3NZ)] Resolving operator images to quay.io..."
+              CSV_JSON=$(oc get csv "${CSV}" -n "${INSTALL_NAMESPACE}" -o json)
+
+              RH_IMAGES=$(echo "${CSV_JSON}" | grep -oE 'registry\.redhat\.io/[^"\\]+@sha256:[a-f0-9]+' | sort -u || true)
+              echo "  Found $(echo "${RH_IMAGES}" | grep -c . || echo 0) registry.redhat.io image(s)"
+
+              TENANT_REPOS=$(curl -s "https://quay.io/api/v1/find/repositories?query=redhat-user-workloads/${TENANT}" 2>/dev/null \
+                | jq -r '.results[]?.name' 2>/dev/null \
+                | sed "s|^${TENANT}/||" || true)
+
+              for RH_IMG in ${RH_IMAGES}; do
+                IMG_DIGEST="${RH_IMG##*@}"
+                FOUND=""
+                for REPO in ${TENANT_REPOS}; do
+                  QUAY_REF="quay.io/redhat-user-workloads/${TENANT}/${REPO}@${IMG_DIGEST}"
+                  if skopeo inspect --raw "docker://${QUAY_REF}" &>/dev/null; then
+                    echo "  ${RH_IMG} → ${QUAY_REF}"
+                    CSV_JSON=$(echo "${CSV_JSON}" | sed "s|${RH_IMG}|${QUAY_REF}|g")
+                    FOUND=1
+                    break
+                  fi
+                done
+                if [[ -z "${FOUND}" ]]; then
+                  if echo "${RH_IMG}" | grep -q 'kube-rbac-proxy'; then
+                    FALLBACK="quay.io/brancz/kube-rbac-proxy:v0.18.1"
+                    echo "  ${RH_IMG} → ${FALLBACK} (upstream fallback)"
+                    CSV_JSON=$(echo "${CSV_JSON}" | sed "s|${RH_IMG}|${FALLBACK}|g")
+                  else
+                    echo "  ${RH_IMG} → kept (not on quay.io)"
                   fi
                 fi
-                sleep 10
               done
 
-              echo "ERROR: Timed out waiting for CSV" >&2
-              exit 1
+              # Remove minKubeVersion and master nodeSelector
+              CSV_JSON=$(echo "${CSV_JSON}" | jq 'del(.spec.minKubeVersion)')
+              CSV_JSON=$(echo "${CSV_JSON}" | jq '
+                (.spec.install.spec.deployments[]?.spec.template.spec.nodeSelector) |=
+                (if . then del(.["node-role.kubernetes.io/master"]) else . end)')
+
+              echo "[$(date -u +%FT%T.%3NZ)] Applying patched CSV..."
+              echo "${CSV_JSON}" | oc replace -f - 2>&1
+
+              # ── Wait for CSV Succeeded ─────────────────────────────────────
+              echo "[$(date -u +%FT%T.%3NZ)] Waiting for CSV phase=Succeeded..."
+              for i in $(seq 1 120); do
+                PHASE=$(oc get csv "${CSV}" -n "${INSTALL_NAMESPACE}" \
+                  -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                [[ "${PHASE}" == "Succeeded" ]] && break
+                if [[ "${PHASE}" == "Failed" ]]; then
+                  echo "ERROR: CSV failed" >&2
+                  oc get csv "${CSV}" -n "${INSTALL_NAMESPACE}" -o jsonpath='{.status.message}' >&2
+                  echo "" >&2
+                  oc get pods -n "${INSTALL_NAMESPACE}" -o wide >&2 || true
+                  exit 1
+                fi
+                if [[ $((i % 6)) -eq 0 ]]; then
+                  echo "[$(date -u +%FT%T.%3NZ)] CSV phase: ${PHASE:-unknown} (${i}/120)"
+                  oc get pods -n "${INSTALL_NAMESPACE}" --no-headers 2>/dev/null || true
+                fi
+                sleep 5
+              done
+
+              if [[ "${PHASE}" != "Succeeded" ]]; then
+                echo "ERROR: Timed out waiting for CSV Succeeded (phase=${PHASE})" >&2
+                oc get csv "${CSV}" -n "${INSTALL_NAMESPACE}" -o json 2>/dev/null \
+                  | jq '{phase: .status.phase, message: .status.message}' >&2 || true
+                oc get pods -n "${INSTALL_NAMESPACE}" -o wide >&2 || true
+                exit 1
+              fi
+              echo "[$(date -u +%FT%T.%3NZ)] Operator installed successfully"
+
+              # ── Certsuite discovery labels ───────────────────────────────────
+              # Patch Subscription status so certsuite can discover the operator
+              oc patch subscription "${SUB}" -n "${INSTALL_NAMESPACE}" \
+                --type merge --subresource status \
+                -p "{\"status\":{\"installedCSV\":\"${CSV}\"}}" 2>&1
+
+              # Label CSV for certsuite operator discovery
+              oc label csv "${CSV}" -n "${INSTALL_NAMESPACE}" \
+                "redhat-best-practices-for-k8s.com/operator=target" --overwrite 2>&1
+
+              # Label DaemonSet pods for certsuite pod discovery
+              DS_NAMES=$(oc get daemonsets -n "${INSTALL_NAMESPACE}" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
+              for DS in ${DS_NAMES}; do
+                echo "[$(date -u +%FT%T.%3NZ)] Patching DaemonSet ${DS} with certsuite labels..."
+                oc patch daemonset "${DS}" -n "${INSTALL_NAMESPACE}" --type=merge \
+                  -p '{"spec":{"template":{"metadata":{"labels":{"redhat-best-practices-for-k8s.com/generic":"target"}}}}}' 2>&1
+                oc rollout status daemonset/"${DS}" -n "${INSTALL_NAMESPACE}" --timeout=120s 2>&1 || true
+              done
 
           # ── Step 3: Deploy operands from test bundle ─────────────────
           - name: deploy-operands
-            image: quay.io/openshift/origin-cli:latest
+            image: quay.io/konflux-ci/konflux-test:v1.4.31@sha256:a7cae9e96663e277a3904d0c78630508ddb6cc8eebaa912a840bd20f68dcaad1
+            onError: continue
             volumeMounts:
               - name: credentials
                 mountPath: /credentials
@@ -472,13 +655,25 @@ spec:
               BUNDLE_DIR="/workspace/test-bundle"
               mkdir -p "${BUNDLE_DIR}"
 
-              GIT_URL="${TEST_BUNDLE_REF%%#*}"
+              GIT_URL_AND_REV="${TEST_BUNDLE_REF%%#*}"
               BUNDLE_PATH="${TEST_BUNDLE_REF#*#}"
               [[ "${BUNDLE_PATH}" == "${TEST_BUNDLE_REF}" ]] && BUNDLE_PATH="."
 
-              echo "[$(date -u +%FT%T.%3NZ)] Cloning ${GIT_URL} (path: ${BUNDLE_PATH})"
+              # Split URL@revision — only split on the last '@' after '.git'
+              if [[ "${GIT_URL_AND_REV}" == *".git@"* ]]; then
+                GIT_URL="${GIT_URL_AND_REV%.git@*}.git"
+                GIT_REV="${GIT_URL_AND_REV##*.git@}"
+              else
+                GIT_URL="${GIT_URL_AND_REV}"
+                GIT_REV=""
+              fi
+
+              BRANCH_ARGS=""
+              [[ -n "${GIT_REV}" ]] && BRANCH_ARGS="-b ${GIT_REV}"
+
+              echo "[$(date -u +%FT%T.%3NZ)] Cloning ${GIT_URL} (rev: ${GIT_REV:-HEAD}, path: ${BUNDLE_PATH})"
               CLONE_DIR=$(mktemp -d)
-              git clone --depth 1 "${GIT_URL}" "${CLONE_DIR}"
+              git clone --depth 1 ${BRANCH_ARGS} "${GIT_URL}" "${CLONE_DIR}"
               cp -r "${CLONE_DIR}/${BUNDLE_PATH}/." "${BUNDLE_DIR}/"
               rm -rf "${CLONE_DIR}"
 
@@ -538,19 +733,29 @@ spec:
               #!/usr/bin/env bash
               set -euo pipefail
 
+              # Disable in-cluster config so client-go uses the EaaS kubeconfig
+              # instead of the Tekton pod's SA token (Issue #5)
+              unset KUBERNETES_SERVICE_HOST KUBERNETES_SERVICE_PORT
+              mkdir -p ~/.kube
+              cp "${KUBECONFIG}" ~/.kube/config
+
               RESULTS_DIR="/workspace/results"
               CONFIG_FILE="/workspace/test-bundle/certsuite_config.yml"
               mkdir -p "${RESULTS_DIR}"
 
               if [[ ! -f "${CONFIG_FILE}" ]]; then
-                echo "WARNING: No certsuite_config.yml in test bundle. Using default."
-                CONFIG_FILE=""
+                echo "ERROR: certsuite_config.yml not found in test bundle" >&2
+                echo "Each operator test bundle must include a certsuite_config.yml" >&2
+                exit 1
               fi
 
-              CONFIG_ARGS=""
-              if [[ -n "${CONFIG_FILE}" ]]; then
-                CONFIG_ARGS="--config-file ${CONFIG_FILE}"
-              fi
+              # Copy to certsuite's default location as well
+              mkdir -p config
+              cp "${CONFIG_FILE}" config/certsuite_config.yml
+
+              CONFIG_ARGS="--config-file ${CONFIG_FILE}"
+
+              echo "[$(date -u +%FT%T.%3NZ)] Using kubeconfig: ${KUBECONFIG}"
 
               if [[ -z "${CERTSUITE_LABELS}" ]]; then
                 SUITE_DIR="${RESULTS_DIR}/all"
@@ -559,6 +764,7 @@ spec:
 
                 set +e
                 certsuite run \
+                  --kubeconfig "${KUBECONFIG}" \
                   --output-dir "${SUITE_DIR}" \
                   ${CONFIG_ARGS} \
                   2>&1 | tee "${SUITE_DIR}/certsuite.log"
@@ -573,6 +779,7 @@ spec:
                   echo "[$(date -u +%FT%T.%3NZ)] Running: ${LABEL}"
                   set +e
                   certsuite run \
+                    --kubeconfig "${KUBECONFIG}" \
                     --label-filter "${LABEL}" \
                     --output-dir "${SUITE_DIR}" \
                     ${CONFIG_ARGS} \
@@ -591,42 +798,61 @@ spec:
                 echo "[$(date -u +%FT%T.%3NZ)] ${SUITE}: total=${TOTAL} passed=${PASSED} failed=${FAILED}"
               done
 
-    # ── 7. Collect Results ─────────────────────────────────────────────
-    - name: collect-results
-      runAfter:
-        - deploy-and-test
-      when:
-        - input: $(tasks.parse-metadata.results.test-event-type)
-          operator: in
-          values: ["push", "Push"]
-      taskRef:
-        resolver: git
-        params:
-          - name: url
-            value: https://github.com/redhat-best-practices-for-k8s/konflux-certsuite.git
-          - name: revision
-            value: main
-          - name: pathInRepo
-            value: tasks/collect-results/0.1/collect-results.yaml
-      params:
-        - name: CERT_TRACK_URL
-          value: $(params.CERT_TRACK_URL)
-        - name: CERT_TRACK_SECRET_NAME
-          value: $(params.CERT_TRACK_SECRET_NAME)
-        - name: CERT_TRACK_SECRET_KEY
-          value: $(params.CERT_TRACK_SECRET_KEY)
-        - name: RELEASE_VERSION
-          value: "$(tasks.parse-metadata.results.source-git-revision)"
-        - name: OPERATOR_NAME
-          value: "$(tasks.get-unreleased-bundle.results.packageName)"
-        - name: OCI_REF
-          value: $(params.OCI_REF)
-        - name: CREDENTIALS_SECRET_NAME
-          value: $(params.CREDENTIALS_SECRET_NAME)
-      workspaces:
-        - name: shared
-          workspace: shared
+          # ── Step 5: Debug — print kubeconfig and hold cluster alive ──
+          - name: debug-cluster
+            image: quay.io/konflux-ci/konflux-test:v1.4.31@sha256:a7cae9e96663e277a3904d0c78630508ddb6cc8eebaa912a840bd20f68dcaad1
+            onError: continue
+            volumeMounts:
+              - name: credentials
+                mountPath: /credentials
+            env:
+              - name: KUBECONFIG
+                value: "/credentials/$(steps.get-kubeconfig.results.kubeconfig)"
+            script: |
+              #!/usr/bin/env bash
+              echo "════════════════════════════════════════════════════"
+              echo " DEBUG: Cluster connection info"
+              echo "════════════════════════════════════════════════════"
+              echo ""
+              echo "API Server: $(oc whoami --show-server 2>/dev/null)"
+              echo "User: $(oc whoami 2>/dev/null)"
+              echo ""
+              echo "── kubeconfig ──"
+              cat "${KUBECONFIG}" 2>/dev/null
+              echo ""
+              echo "── admin password ──"
+              PASS_FILE=$(ls /credentials/*-password 2>/dev/null | head -1)
+              [[ -f "${PASS_FILE}" ]] && cat "${PASS_FILE}"
+              echo ""
+              echo ""
+              echo "── oc login command ──"
+              echo "oc login $(oc whoami --show-server 2>/dev/null) -u kubeadmin -p $(cat "${PASS_FILE}" 2>/dev/null) --insecure-skip-tls-verify"
+              echo ""
+              echo "── Cluster status ──"
+              oc get nodes -o wide 2>/dev/null || true
+              echo ""
+              echo "── Operator status ──"
+              INSTALL_NS=""
+              [[ -f /workspace/install-namespace ]] && INSTALL_NS=$(cat /workspace/install-namespace)
+              if [[ -n "${INSTALL_NS}" ]]; then
+                echo "Namespace: ${INSTALL_NS}"
+                oc get csv -n "${INSTALL_NS}" -o wide 2>/dev/null || true
+                oc get subscription -n "${INSTALL_NS}" -o wide 2>/dev/null || true
+                oc get catalogsource -n "${INSTALL_NS}" -o wide 2>/dev/null || true
+                oc get pods -n "${INSTALL_NS}" -o wide 2>/dev/null || true
+                echo ""
+                echo "── Events ──"
+                oc get events -n "${INSTALL_NS}" --sort-by='.lastTimestamp' 2>/dev/null | tail -30 || true
+              fi
+              echo ""
+              echo "── Non-running pods (all namespaces) ──"
+              oc get pods -A --field-selector=status.phase!=Running,status.phase!=Succeeded 2>/dev/null | head -20 || true
+              echo ""
+              echo "Sleeping 60 minutes to keep cluster alive for debugging..."
+              echo "Cancel the PipelineRun when done."
+              sleep 3600
 
-  workspaces:
-    - name: shared
-      description: Shared workspace for results
+    # Results are printed in the deploy-and-test step's certsuite summary.
+    # TODO: Add collect-results as a step inside deploy-and-test when
+    # cert-track and OCI push are needed (Konflux IntegrationTestScenarios
+    # do not provide pipeline-level workspace bindings).
