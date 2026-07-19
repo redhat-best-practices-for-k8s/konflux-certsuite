@@ -35,6 +35,7 @@ spec:
     # Optional:
     # - CERTSUITE_LABELS: default "common"
     # - PACKAGE_NAME / CHANNEL_NAME: auto-detected from FBC when empty
+    # - OCI_PUSH_SECRET: Quay push secret for certsuite results
   resolverRef:
     resolver: git
     params:

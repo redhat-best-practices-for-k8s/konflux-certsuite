@@ -55,6 +55,14 @@ spec:
 
         Leave unset for released operators that pull from registry.redhat.io
         (or when the FBC is not on quay.io/redhat-user-workloads).
+    - name: OCI_PUSH_SECRET
+      type: string
+      default: ""
+      description: |
+        kubernetes.io/dockerconfigjson Secret with push access to the Quay repo
+        where certsuite results are stored. Use the component's ImageRepository
+        push secret (oc get imagerepository -o jsonpath='{.status.credentials.push-secret}').
+        Results are tagged on the same image URL as the FBC/component under test.
 
   tasks:
     # ── 1. Parse Snapshot Metadata ──────────────────────────────────────
@@ -480,6 +488,8 @@ spec:
           value: $(params.TEST_BUNDLE_REF)
         - name: certsuiteLabels
           value: $(params.CERTSUITE_LABELS)
+        - name: ociPushSecret
+          value: $(params.OCI_PUSH_SECRET)
       taskSpec:
         params:
           - name: eaasSpaceSecretRef
@@ -498,9 +508,15 @@ spec:
             type: string
           - name: certsuiteLabels
             type: string
+          - name: ociPushSecret
+            type: string
         volumes:
           - name: credentials
             emptyDir: {}
+          - name: oci-push-creds
+            secret:
+              secretName: $(params.ociPushSecret)
+              optional: true
         steps:
           # ── Step 1: Get kubeconfig from EaaS ─────────────────────────
           - name: get-kubeconfig
@@ -910,5 +926,65 @@ spec:
                 echo "[$(date -u +%FT%T.%3NZ)] ${SUITE}: total=${TOTAL} passed=${PASSED} failed=${FAILED}"
               done
 
+          # ── Step 5: Push results to the component's Quay repo ───────
+          - name: push-results
+            image: ghcr.io/oras-project/oras:v1.2.2
+            onError: continue
+            volumeMounts:
+              - name: oci-push-creds
+                mountPath: /oci-push-creds
+                readOnly: true
+            env:
+              - name: FBC_FRAGMENT
+                value: "$(params.fbcFragment)"
+            script: |
+              #!/bin/sh
+              set -eu
 
-    # Results are printed in the deploy-and-test step's certsuite summary.
+              RESULTS_DIR="/workspace/results"
+              if [ ! -d "${RESULTS_DIR}" ] || ! ls "${RESULTS_DIR}"/*/claim.json >/dev/null 2>&1; then
+                echo "No certsuite results found. Skipping OCI push."
+                exit 0
+              fi
+
+              IMAGE_REF=$(echo "${FBC_FRAGMENT}" | cut -d'@' -f1)
+              if [ -z "${IMAGE_REF}" ]; then
+                echo "Cannot derive OCI ref from FBC_FRAGMENT. Skipping."
+                exit 0
+              fi
+
+              # Use the component ImageRepository push secret (mounted volume)
+              DOCKER_CFG="/oci-push-creds/.dockerconfigjson"
+              if [ ! -f "${DOCKER_CFG}" ]; then
+                echo "WARNING: OCI push secret not mounted at ${DOCKER_CFG}."
+                echo "Set OCI_PUSH_SECRET to the component ImageRepository push secret."
+                exit 0
+              fi
+              mkdir -p /tmp/docker
+              cp "${DOCKER_CFG}" /tmp/docker/config.json
+              export DOCKER_CONFIG=/tmp/docker
+
+              OCI_TAG="certsuite-results-$(date -u +%Y%m%d-%H%M%S)"
+              OCI_REF="${IMAGE_REF}:${OCI_TAG}"
+
+              echo "Packaging results..."
+              tar czf /tmp/certsuite-results.tar.gz -C /workspace results/
+
+              echo "Pushing results to: ${OCI_REF}"
+              cd /tmp
+              if oras push "${OCI_REF}" \
+                --artifact-type application/vnd.certsuite.results.v1+gzip \
+                certsuite-results.tar.gz:application/gzip; then
+                echo "Results pushed successfully"
+                echo ""
+                echo "Download results with:"
+                echo "  oras pull ${OCI_REF}"
+                echo "  tar xzf certsuite-results.tar.gz"
+              else
+                echo "WARNING: OCI push failed (non-fatal)"
+              fi
+
+    # Results are pushed to the same Quay repo as the FBC/component image,
+    # tagged certsuite-results-<timestamp>. Auth via OCI_PUSH_SECRET
+    # (ImageRepository push secret). Download with:
+    #   oras pull <OCI_REF printed in push-results logs>
