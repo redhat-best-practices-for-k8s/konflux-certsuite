@@ -4,6 +4,10 @@
 #
 # Copy this file into your Konflux tenants-config repository and update
 # the values marked with <REPLACE>.
+#
+# For unreleased operators, keep .tekton/images-mirror-set.yaml in the same
+# monorepo as TEST_BUNDLE_REF (Konflux/Conforma convention). The pipeline
+# converts it to Hypershift imageContentSources at provision time.
 apiVersion: appstudio.redhat.com/v1beta2
 kind: IntegrationTestScenario
 metadata:
@@ -17,12 +21,21 @@ spec:
     - description: Certsuite testing for the FBC component
       name: component_<REPLACE:component-name>
   params:
+    # Prefer the operator monorepo so .tekton/images-mirror-set.yaml is found
+    # automatically (same git repo/revision, default path).
     - name: TEST_BUNDLE_REF
-      value: "https://github.com/<REPLACE:org>/<REPLACE:repo>.git#certsuite-test-bundle"
-    # All other params are optional with sensible defaults:
-    # - CERTSUITE_LABELS: empty = run all tests
-    # - CERT_TRACK_URL: empty = skip cert-track upload
-    # - OCI_REF: empty = skip OCI push
+      value: "https://github.com/<REPLACE:org>/<REPLACE:repo>.git@<REPLACE:branch>#certsuite-test-bundle"
+    # Example for PTP 4.22 (mirror set discovered automatically from this repo):
+    #   https://github.com/redhat-cne/downstream-ptp-operator-monorepo.git@release-4.22#<path-to-test-bundle>
+    #
+    # Only needed if the mirror set lives in a different repo/path:
+    # - name: IMAGES_MIRROR_SET_REF
+    #   value: "https://github.com/<REPLACE:org>/<REPLACE:repo>.git@<REPLACE:branch>#.tekton/images-mirror-set.yaml"
+    #
+    # Optional:
+    # - CERTSUITE_LABELS: default "common"
+    # - PACKAGE_NAME / CHANNEL_NAME: auto-detected from FBC when empty
+    # - OCI_PUSH_SECRET: Quay push secret for certsuite results
   resolverRef:
     resolver: git
     params:
