@@ -57,7 +57,7 @@ spec:
         (or when the FBC is not on quay.io/redhat-user-workloads).
     - name: OCI_PUSH_SECRET
       type: string
-      default: ""
+      default: "oci-push-secret-not-configured"
       description: |
         kubernetes.io/dockerconfigjson Secret with push access to the Quay repo
         where certsuite results are stored. Use the component's ImageRepository
@@ -74,7 +74,7 @@ spec:
         Requires OCI_RESULTS_SECRET for authentication.
     - name: OCI_RESULTS_SECRET
       type: string
-      default: ""
+      default: "oci-results-secret-not-configured"
       description: |
         kubernetes.io/dockerconfigjson Secret with push access to the
         external OCI_RESULTS_REPO. Required when OCI_RESULTS_REPO is set.
