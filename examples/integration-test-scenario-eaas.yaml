@@ -35,7 +35,13 @@ spec:
     # Optional:
     # - CERTSUITE_LABELS: default "common"
     # - PACKAGE_NAME / CHANNEL_NAME: auto-detected from FBC when empty
-    # - OCI_PUSH_SECRET: Quay push secret for certsuite results
+    # - OCI_PUSH_SECRET: Quay push secret for certsuite results (component repo)
+    #
+    # External OCI results storage (push to a different Quay repo):
+    # - name: OCI_RESULTS_REPO
+    #   value: "quay.io/<org>/certsuite-results"
+    # - name: OCI_RESULTS_SECRET
+    #   value: "<secret-with-push-access-to-OCI_RESULTS_REPO>"
   resolverRef:
     resolver: git
     params:

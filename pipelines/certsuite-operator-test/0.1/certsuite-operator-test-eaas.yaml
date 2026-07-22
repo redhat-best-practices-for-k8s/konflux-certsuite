@@ -63,6 +63,23 @@ spec:
         where certsuite results are stored. Use the component's ImageRepository
         push secret (oc get imagerepository -o jsonpath='{.status.credentials.push-secret}').
         Results are tagged on the same image URL as the FBC/component under test.
+    - name: OCI_RESULTS_REPO
+      type: string
+      default: ""
+      description: |
+        External OCI registry reference for storing certsuite results
+        (e.g. quay.io/my-org/certsuite-results). When set, results are
+        pushed here instead of the component's FBC image repo.
+        Must not contain a tag (:) or digest (@).
+        Requires OCI_RESULTS_SECRET for authentication.
+    - name: OCI_RESULTS_SECRET
+      type: string
+      default: ""
+      description: |
+        kubernetes.io/dockerconfigjson Secret with push access to the
+        external OCI_RESULTS_REPO. Required when OCI_RESULTS_REPO is set.
+        Unlike OCI_PUSH_SECRET this secret is never sent to the component
+        registry and vice-versa.
 
   tasks:
     # ── 1. Parse Snapshot Metadata ──────────────────────────────────────
@@ -490,6 +507,10 @@ spec:
           value: $(params.CERTSUITE_LABELS)
         - name: ociPushSecret
           value: $(params.OCI_PUSH_SECRET)
+        - name: ociResultsRepo
+          value: $(params.OCI_RESULTS_REPO)
+        - name: ociResultsSecret
+          value: $(params.OCI_RESULTS_SECRET)
       taskSpec:
         params:
           - name: eaasSpaceSecretRef
@@ -510,12 +531,20 @@ spec:
             type: string
           - name: ociPushSecret
             type: string
+          - name: ociResultsRepo
+            type: string
+          - name: ociResultsSecret
+            type: string
         volumes:
           - name: credentials
             emptyDir: {}
           - name: oci-push-creds
             secret:
               secretName: $(params.ociPushSecret)
+              optional: true
+          - name: oci-results-creds
+            secret:
+              secretName: $(params.ociResultsSecret)
               optional: true
         steps:
           # ── Step 1: Get kubeconfig from EaaS ─────────────────────────
@@ -912,7 +941,13 @@ spec:
                 echo "[$(date -u +%FT%T.%3NZ)] ${SUITE}: total=${TOTAL} passed=${PASSED} failed=${FAILED}"
               done
 
-          # ── Step 5: Push results to the component's Quay repo ───────
+          # ── Step 5: Push results to OCI registry ────────────────────
+          # Supports two modes:
+          #   1. Component repo (default): push to the same Quay repo as
+          #      the FBC image, authenticated via OCI_PUSH_SECRET.
+          #   2. External repo: push to OCI_RESULTS_REPO, authenticated
+          #      via OCI_RESULTS_SECRET. Credentials are never mixed
+          #      between modes.
           - name: push-results
             image: ghcr.io/oras-project/oras:v1.2.2
             onError: continue
@@ -920,9 +955,16 @@ spec:
               - name: oci-push-creds
                 mountPath: /oci-push-creds
                 readOnly: true
+              - name: oci-results-creds
+                mountPath: /oci-results-creds
+                readOnly: true
             env:
               - name: FBC_FRAGMENT
                 value: "$(params.fbcFragment)"
+              - name: PACKAGE_NAME
+                value: "$(params.packageName)"
+              - name: OCI_RESULTS_REPO
+                value: "$(params.ociResultsRepo)"
             script: |
               #!/bin/sh
               set -eu
@@ -933,24 +975,60 @@ spec:
                 exit 0
               fi
 
-              IMAGE_REF=$(echo "${FBC_FRAGMENT}" | cut -d'@' -f1)
-              if [ -z "${IMAGE_REF}" ]; then
-                echo "Cannot derive OCI ref from FBC_FRAGMENT. Skipping."
-                exit 0
+              # ── Determine target repo and credentials ──────────────────
+              USE_EXTERNAL="false"
+              if [ -n "${OCI_RESULTS_REPO}" ]; then
+                USE_EXTERNAL="true"
+
+                # Validate: reject tags and digests but allow host:port.
+                # Split off the host (everything before the first /) and
+                # check only the repo path for illegal : or @ characters.
+                REPO_PATH="${OCI_RESULTS_REPO#*/}"
+                case "${REPO_PATH}" in
+                  *:*|*@*)
+                    echo "ERROR: OCI_RESULTS_REPO must be a bare repository reference"
+                    echo "       (no ':tag' or '@sha256:...'). Got: ${OCI_RESULTS_REPO}"
+                    exit 1
+                    ;;
+                esac
+
+                # External mode — require dedicated credentials (no fallback)
+                DOCKER_CFG="/oci-results-creds/.dockerconfigjson"
+                if [ ! -f "${DOCKER_CFG}" ]; then
+                  echo "ERROR: OCI_RESULTS_REPO is set but OCI_RESULTS_SECRET is missing or empty."
+                  echo "       External OCI storage requires its own push secret."
+                  exit 1
+                fi
+                IMAGE_REF="${OCI_RESULTS_REPO}"
+                echo "Using external OCI results repo: ${IMAGE_REF}"
+              else
+                # Component repo mode — derive from FBC fragment
+                IMAGE_REF=$(echo "${FBC_FRAGMENT}" | cut -d'@' -f1)
+                if [ -z "${IMAGE_REF}" ]; then
+                  echo "Cannot derive OCI ref from FBC_FRAGMENT. Skipping."
+                  exit 0
+                fi
+                DOCKER_CFG="/oci-push-creds/.dockerconfigjson"
+                if [ ! -f "${DOCKER_CFG}" ]; then
+                  echo "WARNING: OCI push secret not mounted at ${DOCKER_CFG}."
+                  echo "Set OCI_PUSH_SECRET to the component ImageRepository push secret."
+                  exit 0
+                fi
               fi
 
-              # Use the component ImageRepository push secret (mounted volume)
-              DOCKER_CFG="/oci-push-creds/.dockerconfigjson"
-              if [ ! -f "${DOCKER_CFG}" ]; then
-                echo "WARNING: OCI push secret not mounted at ${DOCKER_CFG}."
-                echo "Set OCI_PUSH_SECRET to the component ImageRepository push secret."
-                exit 0
-              fi
               mkdir -p /tmp/docker
               cp "${DOCKER_CFG}" /tmp/docker/config.json
               export DOCKER_CONFIG=/tmp/docker
 
-              OCI_TAG="certsuite-results-$(date -u +%Y%m%d-%H%M%S)"
+              # ── Build tag ──────────────────────────────────────────────
+              # External repos are shared across operators, so include the
+              # package name in the tag to avoid collisions. Component repo
+              # tags keep the original format for backward compatibility.
+              if [ "${USE_EXTERNAL}" = "true" ] && [ -n "${PACKAGE_NAME}" ]; then
+                OCI_TAG="certsuite-results-${PACKAGE_NAME}-$(date -u +%Y%m%d-%H%M%S)"
+              else
+                OCI_TAG="certsuite-results-$(date -u +%Y%m%d-%H%M%S)"
+              fi
               OCI_REF="${IMAGE_REF}:${OCI_TAG}"
 
               echo "Packaging results..."
@@ -967,10 +1045,11 @@ spec:
                 echo "  oras pull ${OCI_REF}"
                 echo "  tar xzf certsuite-results.tar.gz"
               else
-                echo "WARNING: OCI push failed (non-fatal)"
+                echo "ERROR: OCI push failed"
               fi
 
-    # Results are pushed to the same Quay repo as the FBC/component image,
-    # tagged certsuite-results-<timestamp>. Auth via OCI_PUSH_SECRET
-    # (ImageRepository push secret). Download with:
+    # Results are pushed to either:
+    #   a) the same Quay repo as the FBC/component image (OCI_PUSH_SECRET), or
+    #   b) an external repo (OCI_RESULTS_REPO + OCI_RESULTS_SECRET).
+    # Tagged certsuite-results-<package>-<timestamp>. Download with:
     #   oras pull <OCI_REF printed in push-results logs>

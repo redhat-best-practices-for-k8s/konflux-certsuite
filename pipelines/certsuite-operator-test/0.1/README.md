@@ -36,6 +36,20 @@ cluster is automatically destroyed when the PipelineRun completes.
 Released operators on `registry.redhat.io` need no mirror set (skipped when the
 FBC is not on `quay.io/redhat-user-workloads`).
 
+### OCI Results Storage
+
+By default results are pushed to the component's Quay repo (via `OCI_PUSH_SECRET`).
+To push to an **external** registry instead:
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `OCI_RESULTS_REPO` | Yes | Bare OCI repo reference (e.g. `quay.io/my-org/certsuite-results`). Must not include a tag or digest. |
+| `OCI_RESULTS_SECRET` | Yes | `kubernetes.io/dockerconfigjson` Secret with push access to `OCI_RESULTS_REPO`. |
+
+Credentials are strictly isolated: the component push secret is never sent to
+the external registry, and vice-versa. Tags include the operator package name
+to prevent collisions in shared repos.
+
 ## Shared Cluster Variant
 
 **File:** `certsuite-operator-test.yaml`

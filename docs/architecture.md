@@ -170,7 +170,9 @@ real-world reference.
 flowchart TD
     CS[Certsuite Run] --> Claim[claim.json]
     Claim --> API["POST /api/v1/claim"]
-    Claim --> OCI[OCI Push]
+    Claim --> OCI{OCI Push}
+    OCI -->|default| CompRepo["Component Quay Repo\n(OCI_PUSH_SECRET)"]
+    OCI -->|external| ExtRepo["External Quay Repo\n(OCI_RESULTS_REPO +\nOCI_RESULTS_SECRET)"]
 
     subgraph certtrack [cert-track-results]
         API --> Parse[Parse claim.json]
@@ -180,6 +182,25 @@ flowchart TD
         Retention -->|older than 3rd| Strip["Strip configurations + nodes"]
         Retention -->|preserved=true| Keep[Keep Full Data]
     end
+```
+
+### OCI Results Storage
+
+Results are pushed as OCI artifacts (via `oras`) with artifact type
+`application/vnd.certsuite.results.v1+gzip`. Two modes are supported:
+
+| Mode | Parameters | Description |
+|------|-----------|-------------|
+| **Component repo** (default) | `OCI_PUSH_SECRET` | Results are tagged on the same Quay repo as the FBC/component image. |
+| **External repo** | `OCI_RESULTS_REPO` + `OCI_RESULTS_SECRET` | Results are pushed to a dedicated external registry. Credentials are isolated — the component push secret is never sent to the external registry. |
+
+Tags include the operator package name to avoid collisions when multiple
+operators share the same external repo: `certsuite-results-<package>-<timestamp>`.
+
+Download results:
+```bash
+oras pull <OCI_REF from push-results logs>
+tar xzf certsuite-results.tar.gz
 ```
 
 ### Retention Policy
@@ -205,5 +226,6 @@ For each `(operator, release)` pair:
    - `shared-cluster-kubeconfig` -- kubeconfig for the shared cluster
    - `cert-track-api-token` -- API token for cert-track-results
    - `quay-dockerconfig` -- OCI registry credentials
+   - (EaaS, optional) external OCI results secret -- if using `OCI_RESULTS_REPO`
 5. Merge a change to your FBC component -- the pipeline triggers
    automatically on push events.
