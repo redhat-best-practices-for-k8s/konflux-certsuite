@@ -23,8 +23,7 @@ cluster is automatically destroyed when the PipelineRun completes.
 6. `provision-cluster` -- create ephemeral cluster with those mirrors (HCCO
    applies a managed IDMS; `registry.redhat.io` pulls redirect to quay.io)
 7. `deploy-and-test` -- standard CatalogSource from FBC image, OLM install,
-   Hypershift CSV fixes (`minKubeVersion` / master `nodeSelector`), operands,
-   certsuite
+   optional CSV patches from the test bundle, operands, certsuite
 
 ### Minimum Parameters
 

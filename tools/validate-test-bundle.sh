@@ -74,6 +74,37 @@ if [[ -f "${BUNDLE_DIR}/certsuite-test-bundle.yaml" ]]; then
   else
     warn "No readiness checks defined (pipeline may not wait for operands)"
   fi
+
+  if grep -q "csvPatches:" "${BUNDLE_DIR}/certsuite-test-bundle.yaml"; then
+    pass "csvPatches declared"
+  elif [[ -d "${BUNDLE_DIR}/csv-patches" ]]; then
+    pass "csv-patches/ directory present (auto-discovered)"
+  fi
+fi
+
+# ── CSV patch checks ──────────────────────────────────────────────────
+echo ""
+echo "CSV patches (optional):"
+
+if [[ -d "${BUNDLE_DIR}/csv-patches" ]]; then
+  PATCH_COUNT=$(find "${BUNDLE_DIR}/csv-patches" \( -name "*.json" -o -name "*.yaml" -o -name "*.yml" \) -type f 2>/dev/null | wc -l | tr -d ' ')
+  if [[ ${PATCH_COUNT} -gt 0 ]]; then
+    pass "csv-patches/ contains ${PATCH_COUNT} patch file(s)"
+    for f in "${BUNDLE_DIR}/csv-patches"/*.json; do
+      [[ -f "${f}" ]] || continue
+      if command -v python3 &>/dev/null; then
+        if python3 -c "import json; data=json.load(open('${f}')); assert isinstance(data, list)" 2>/dev/null; then
+          pass "$(basename "${f}"): JSON6902 list"
+        else
+          fail "$(basename "${f}"): expected a JSON6902 array"
+        fi
+      fi
+    done
+  else
+    warn "csv-patches/ exists but is empty"
+  fi
+else
+  pass "no csv-patches/ (OK — optional)"
 fi
 
 # ── Operand manifest checks ───────────────────────────────────────────

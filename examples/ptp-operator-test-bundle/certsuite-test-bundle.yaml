@@ -15,6 +15,13 @@ spec:
     configuration, which is sufficient to verify the operator is
     properly deployed and functioning.
 
+  # Optional CSV patches applied after OLM creates the CSV and before
+  # waiting for Succeeded. These are required for HyperShift EaaS guests
+  # (often older kube than the 4.22 bundle's minKubeVersion; no master nodes).
+  csvPatches:
+    - path: csv-patches/00-remove-min-kube-version.json
+    - path: csv-patches/01-remove-master-nodeselector.json
+
   readiness:
     timeout: 300
     checks:
