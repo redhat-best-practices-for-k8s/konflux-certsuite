@@ -52,11 +52,27 @@ metadata:
   labels:
     app.kubernetes.io/part-of: my-operator
 spec:
-  # Leave empty to use the operator's install namespace
+  # Namespace for operator install AND operand deployment.
+  # Leave empty to fall back to CSV suggested-namespace, then auto-generate.
   namespace: ""
+
+  # OLM install mode. One of: AllNamespaces, OwnNamespace,
+  # SingleNamespace, MultiNamespace.
+  # Leave empty to auto-detect from CSV supported modes
+  # (prefers AllNamespaces, then OwnNamespace).
+  installMode: ""
 
   description: |
     Software-only test deployment of my-operator.
+
+  # Certsuite discovery labels applied after operator install.
+  # Omit to use defaults: CSV gets "operator=target", all DaemonSets get
+  # "generic=target" on their pod templates.
+  discoveryLabels:
+    operator: "redhat-best-practices-for-k8s.com/operator=target"
+    pod: "redhat-best-practices-for-k8s.com/generic=target"
+    resources:
+      - kind: Deployment       # Which resource kinds to label
 
   # Optional: CSV patches applied after OLM creates the CSV and before
   # waiting for Succeeded. Prefer listing paths here; if omitted, the
@@ -80,6 +96,29 @@ spec:
 
 The operator's package name and channel are **not** specified here --
 Konflux determines those from the FBC fragment in the Snapshot.
+
+### Install Configuration
+
+| Field | Values | Default | Description |
+|-------|--------|---------|-------------|
+| `namespace` | Any string | CSV `suggested-namespace`, then auto-generate `oo-*` | Namespace for both operator install and operand deployment |
+| `installMode` | `AllNamespaces`, `OwnNamespace`, `SingleNamespace`, `MultiNamespace` | Auto-detect from CSV (prefers AllNamespaces, then OwnNamespace) | Determines the OperatorGroup target namespaces |
+
+### Discovery Labels
+
+The pipeline applies discovery labels so certsuite can find the operator
+CSV and its workload pods. You can customize which labels and which
+resource types get labeled:
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `discoveryLabels.operator` | `redhat-best-practices-for-k8s.com/operator=target` | Label applied to the installed CSV |
+| `discoveryLabels.pod` | `redhat-best-practices-for-k8s.com/generic=target` | Label applied to workload pod templates |
+| `discoveryLabels.resources[].kind` | `DaemonSet` | Resource types to label (`Deployment`, `DaemonSet`, `StatefulSet`) |
+
+If your operator's workloads are Deployments (not DaemonSets), set
+`resources` to `[{kind: Deployment}]`. For operators with both, list
+both kinds.
 
 ### Optional CSV patches
 

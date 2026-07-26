@@ -157,9 +157,27 @@ my-operator-test-bundle/
     00-example.json
 ```
 
-The bundle is fetched by the `deploy-operands` task using the
-`TEST_BUNDLE_REF` pipeline parameter. By default, the pipeline runs
-**all** certsuite tests. Pass `CERTSUITE_LABELS` to run only a subset.
+The bundle is fetched **before** operator install (not just before
+operand deployment). This allows the pipeline to read install
+configuration from the bundle:
+
+- **`spec.namespace`** -- used as the install namespace for both the
+  operator and operands. Falls back to the CSV `suggested-namespace`
+  annotation, then auto-generates an `oo-*` namespace.
+- **`spec.installMode`** -- determines the OperatorGroup configuration
+  (`AllNamespaces`, `OwnNamespace`, `SingleNamespace`, `MultiNamespace`).
+  Falls back to auto-detection from the CSV's supported install modes.
+- **`spec.discoveryLabels`** -- controls which labels are applied to
+  the installed CSV and workload pods for certsuite discovery, and which
+  resource kinds (Deployment, DaemonSet, StatefulSet) get labeled.
+
+This design makes the pipeline **operator-agnostic**: all
+operator-specific decisions live in the test bundle, not in pipeline
+logic. The shared `resolve-bundle-config.sh` script handles the
+resolution with CSV-based fallbacks for backward compatibility.
+
+By default, the pipeline runs **all** certsuite tests. Pass
+`CERTSUITE_LABELS` to run only a subset.
 
 See the [Operator Onboarding Guide](operator-onboarding-guide.md) for
 how to create a bundle, and the

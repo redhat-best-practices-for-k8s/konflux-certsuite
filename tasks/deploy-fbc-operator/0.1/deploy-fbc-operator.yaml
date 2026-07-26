@@ -8,8 +8,9 @@ spec:
   description: |
     Deploys an OLM-managed operator from an FBC fragment onto the shared
     cluster. Creates Namespace, OperatorGroup, CatalogSource, and
-    Subscription. Optionally applies CSV patches from the operator test
-    bundle, then waits for the CSV to reach Succeeded phase.
+    Subscription. Reads install config (namespace, installMode, discoveryLabels)
+    from the certsuite test bundle. Optionally applies CSV patches, then
+    waits for the CSV to reach Succeeded phase.
   params:
     - name: KUBECONFIG_SECRET_NAME
       type: string
@@ -29,11 +30,16 @@ spec:
       type: string
     - name: TEST_BUNDLE_REF
       type: string
-      default: ""
       description: |
-        Optional git URL to the operator test bundle (with #path). When set,
-        optional CSV patches from the bundle are applied after OLM creates
-        the CSV and before waiting for Succeeded.
+        Git URL pointing to the operator's certsuite test bundle.
+        Used for install config, CSV patches, and operand deployment.
+        Format: URL[.git@revision][#path]
+    - name: PIPELINE_SCRIPTS_REF
+      type: string
+      default: "https://github.com/redhat-best-practices-for-k8s/konflux-certsuite.git@main"
+      description: |
+        Git URL for fetching pipeline helper scripts. Override to test
+        from a fork/branch. Format: URL[.git@revision]
   results:
     - name: installNamespace
       description: Namespace where the operator was installed
@@ -51,6 +57,58 @@ spec:
       secret:
         secretName: $(params.KUBECONFIG_SECRET_NAME)
   steps:
+    - name: fetch-bundle-and-scripts
+      image: quay.io/konflux-ci/konflux-test:v1.4.31@sha256:a7cae9e96663e277a3904d0c78630508ddb6cc8eebaa912a840bd20f68dcaad1
+      workingDir: $(workspaces.shared.path)
+      env:
+        - name: TEST_BUNDLE_REF
+          value: "$(params.TEST_BUNDLE_REF)"
+        - name: PIPELINE_SCRIPTS_REF
+          value: "$(params.PIPELINE_SCRIPTS_REF)"
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        _parse_ref() {
+          local ref="$1"
+          GIT_PATH="${ref#*#}"; local url="${ref%%#*}"
+          [[ "${GIT_PATH}" == "${ref}" ]] && GIT_PATH="."
+          if [[ "${url}" == *".git@"* ]]; then
+            GIT_URL="${url%@*}"; GIT_REF="${url##*.git@}"
+          elif [[ "${url}" =~ ^(https://[^@]+)@([^@]+)$ ]]; then
+            GIT_URL="${BASH_REMATCH[1]}"; GIT_REF="${BASH_REMATCH[2]}"
+          else
+            GIT_URL="${url}"; GIT_REF="main"
+          fi
+          GIT_URL="${GIT_URL%.git}"
+        }
+
+        _download() {
+          local tmp; tmp=$(mktemp -d)
+          curl -sL "${GIT_URL}/archive/${GIT_REF}.tar.gz" | tar xz -C "${tmp}" --strip-components=1
+          echo "${tmp}"
+        }
+
+        # Fetch test bundle
+        _parse_ref "${TEST_BUNDLE_REF}"
+        BUNDLE_DIR="$(workspaces.shared.path)/test-bundle"; mkdir -p "${BUNDLE_DIR}"
+        echo "[$(date -u +%FT%T.%3NZ)] Downloading bundle from ${GIT_URL} ref=${GIT_REF} path=${GIT_PATH}"
+        TMP=$(_download); cp -r "${TMP}/${GIT_PATH}/." "${BUNDLE_DIR}/"; rm -rf "${TMP}"
+
+        if [[ ! -f "${BUNDLE_DIR}/certsuite-test-bundle.yaml" ]]; then
+          echo "ERROR: certsuite-test-bundle.yaml not found in ${GIT_PATH}" >&2
+          exit 1
+        fi
+
+        # Fetch helper scripts
+        _parse_ref "${PIPELINE_SCRIPTS_REF}"
+        SCRIPTS_DIR="$(workspaces.shared.path)/scripts"; mkdir -p "${SCRIPTS_DIR}"
+        echo "[$(date -u +%FT%T.%3NZ)] Fetching helper scripts from ${GIT_URL} ref=${GIT_REF}"
+        TMP=$(_download)
+        cp "${TMP}/scripts/resolve-bundle-config.sh" "${TMP}/scripts/wait-for-readiness.sh" "${SCRIPTS_DIR}/"
+        chmod +x "${SCRIPTS_DIR}"/*.sh; rm -rf "${TMP}"
+        echo "[$(date -u +%FT%T.%3NZ)] Test bundle and helper scripts ready"
+
     - name: deploy
       image: quay.io/konflux-ci/konflux-test:v1.4.31@sha256:a7cae9e96663e277a3904d0c78630508ddb6cc8eebaa912a840bd20f68dcaad1
       workingDir: $(workspaces.shared.path)
@@ -87,16 +145,28 @@ spec:
           exit 1
         fi
 
-        # Determine install namespace
-        INSTALL_NAMESPACE=$(echo "${bundle_render_out}" | \
+        # Extract CSV fallback metadata for the resolver
+        CSV_SUGGESTED_NS=$(echo "${bundle_render_out}" | \
           jq -r 'select(.schema == "olm.bundle") | .properties[]? |
           select(.type == "olm.bundle.object") | .value.data' 2>/dev/null | \
           base64 -d 2>/dev/null | \
           jq -r 'select(.kind == "ClusterServiceVersion") |
           .metadata.annotations["operatorframework.io/suggested-namespace"] // empty' 2>/dev/null | \
-          head -1)
+          head -1 || echo "")
 
-        if [[ -z "${INSTALL_NAMESPACE}" || "${INSTALL_NAMESPACE}" == "null" ]]; then
+        CSV_INSTALL_MODES=$(echo "${bundle_render_out}" | jq -r '
+          select(.schema == "olm.bundle") | .properties[]? |
+          select(.type == "olm.bundle.object") | .value.data' 2>/dev/null | \
+          base64 -d 2>/dev/null | jq -r '
+          select(.kind == "ClusterServiceVersion") |
+          .spec.installModes[]? | select(.supported == true) | .type' 2>/dev/null || echo "")
+
+        export CSV_SUGGESTED_NS CSV_INSTALL_MODES
+        BUNDLE_DIR="$(workspaces.shared.path)/test-bundle"
+        source "$(workspaces.shared.path)/scripts/resolve-bundle-config.sh"
+
+        INSTALL_NAMESPACE="${BUNDLE_NAMESPACE}"
+        if [[ -z "${INSTALL_NAMESPACE}" ]]; then
           INSTALL_NAMESPACE=$(oc create -f - -o jsonpath='{.metadata.name}' <<NS
         apiVersion: v1
         kind: Namespace
@@ -111,22 +181,7 @@ spec:
         echo "[$(date -u +%FT%T.%3NZ)] Namespace: ${INSTALL_NAMESPACE}"
         echo -n "${INSTALL_NAMESPACE}" > "$(results.installNamespace.path)"
 
-        # Determine install mode
-        TARGET_NS=""
-        MODES=$(echo "${bundle_render_out}" | jq -r '
-          select(.schema == "olm.bundle") | .properties[]? |
-          select(.type == "olm.bundle.object") | .value.data' 2>/dev/null | \
-          base64 -d 2>/dev/null | jq -r '
-          select(.kind == "ClusterServiceVersion") |
-          .spec.installModes[] | select(.supported == true) | .type' 2>/dev/null || echo "AllNamespaces")
-
-        if echo "${MODES}" | grep -q "AllNamespaces"; then
-          TARGET_NS=""
-        elif echo "${MODES}" | grep -q "OwnNamespace"; then
-          TARGET_NS="${INSTALL_NAMESPACE}"
-        fi
-
-        # OperatorGroup
+        # OperatorGroup (mode-aware from resolver)
         EXISTING_OG=$(oc -n "${INSTALL_NAMESPACE}" get operatorgroup -o jsonpath="{.items[*].metadata.name}" 2>/dev/null || true)
         if [[ -z "${EXISTING_OG}" ]]; then
           OG_OP=create
@@ -136,6 +191,12 @@ spec:
           OG_META="name: ${EXISTING_OG}"
         fi
 
+        OG_SPEC=""
+        if [[ -n "${OG_TARGET_NS}" ]]; then
+          OG_SPEC="targetNamespaces:
+            - ${OG_TARGET_NS}"
+        fi
+
         OG=$(oc ${OG_OP} -f - -o jsonpath='{.metadata.name}' <<OG_EOF
         apiVersion: operators.coreos.com/v1
         kind: OperatorGroup
@@ -143,7 +204,7 @@ spec:
           ${OG_META}
           namespace: ${INSTALL_NAMESPACE}
         spec:
-          targetNamespaces: [${TARGET_NS:+\"${TARGET_NS}\"}]
+          ${OG_SPEC}
         OG_EOF
         )
 
@@ -172,7 +233,6 @@ spec:
           sleep 10
         done
 
-        # Bundle name & Subscription
         BUNDLE_NAME=$(echo "${bundle_render_out}" | jq -r 'select(.schema == "olm.bundle") | .name' | head -1)
 
         SUB=$(oc create -f - -o jsonpath='{.metadata.name}' <<SUB_EOF
@@ -212,20 +272,8 @@ spec:
         echo "[$(date -u +%FT%T.%3NZ)] CSV created: ${CSV}"
 
         # Optional CSV patches from the operator test bundle (no-op if none)
-        if [[ -n "${TEST_BUNDLE_REF}" ]]; then
-          BUNDLE_DIR="$(workspaces.shared.path)/test-bundle"
-          if [[ ! -f "${BUNDLE_DIR}/certsuite-test-bundle.yaml" ]]; then
-            mkdir -p "${BUNDLE_DIR}"
-            GIT_URL="${TEST_BUNDLE_REF%%#*}"
-            BUNDLE_PATH="${TEST_BUNDLE_REF#*#}"
-            [[ "${BUNDLE_PATH}" == "${TEST_BUNDLE_REF}" ]] && BUNDLE_PATH="."
-            echo "[$(date -u +%FT%T.%3NZ)] Fetching test bundle for CSV patches: ${GIT_URL} (${BUNDLE_PATH})"
-            CLONE_DIR=$(mktemp -d)
-            git clone --depth 1 "${GIT_URL}" "${CLONE_DIR}"
-            cp -r "${CLONE_DIR}/${BUNDLE_PATH}/." "${BUNDLE_DIR}/"
-            rm -rf "${CLONE_DIR}"
-          fi
-
+        BUNDLE_DIR="$(workspaces.shared.path)/test-bundle"
+        if [[ -f "${BUNDLE_DIR}/certsuite-test-bundle.yaml" ]]; then
           collect_csv_patches() {
             local manifest="${BUNDLE_DIR}/certsuite-test-bundle.yaml"
             if [[ -f "${manifest}" ]] && command -v yq &>/dev/null; then
@@ -337,6 +385,27 @@ spec:
           if [[ "${PHASE}" == "Succeeded" ]]; then
             echo "[$(date -u +%FT%T.%3NZ)] CSV '${CSV}' ready"
             echo -n "${CSV}" > "$(results.csvName.path)"
+
+            # Apply discovery labels from bundle config
+            LABEL_KEY="${DISCOVERY_OPERATOR_LABEL%%=*}"
+            LABEL_VAL="${DISCOVERY_OPERATOR_LABEL#*=}"
+            oc label csv "${CSV}" -n "${INSTALL_NAMESPACE}" \
+              "${LABEL_KEY}=${LABEL_VAL}" --overwrite 2>&1
+
+            POD_LABEL_KEY="${DISCOVERY_POD_LABEL%%=*}"
+            POD_LABEL_VAL="${DISCOVERY_POD_LABEL#*=}"
+            for RESOURCE_KIND in ${DISCOVERY_RESOURCE_KINDS}; do
+              LOWER_KIND=$(echo "${RESOURCE_KIND}" | tr '[:upper:]' '[:lower:]')
+              NAMES=$(oc get "${LOWER_KIND}" -n "${INSTALL_NAMESPACE}" \
+                -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
+              for RNAME in ${NAMES}; do
+                echo "[$(date -u +%FT%T.%3NZ)] Patching ${RESOURCE_KIND} ${RNAME} with discovery label..."
+                oc patch "${LOWER_KIND}" "${RNAME}" -n "${INSTALL_NAMESPACE}" --type=merge \
+                  -p "{\"spec\":{\"template\":{\"metadata\":{\"labels\":{\"${POD_LABEL_KEY}\":\"${POD_LABEL_VAL}\"}}}}}" 2>&1
+                oc rollout status "${LOWER_KIND}/${RNAME}" -n "${INSTALL_NAMESPACE}" --timeout=120s 2>&1 || true
+              done
+            done
+
             exit 0
           fi
           if [[ "${PHASE}" == "Failed" ]]; then

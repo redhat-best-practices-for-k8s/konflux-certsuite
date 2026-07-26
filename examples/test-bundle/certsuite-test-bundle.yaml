@@ -14,15 +14,31 @@ metadata:
   labels:
     app.kubernetes.io/part-of: example-operator
 spec:
-  # Namespace where operands will be deployed.
-  # Leave empty to use the operator's install namespace.
+  # Namespace for operator install AND operand deployment.
+  # Leave empty to fall back to CSV suggested-namespace, then auto-generate.
   namespace: ""
+
+  # OLM install mode that determines the OperatorGroup configuration.
+  # One of: AllNamespaces, OwnNamespace, SingleNamespace, MultiNamespace.
+  # Leave empty to auto-detect from CSV supported modes
+  # (prefers AllNamespaces, then OwnNamespace).
+  installMode: ""
 
   # Human-readable description
   description: |
     Deploys a minimal set of example-operator operands for certsuite
     testing. Uses software-only configuration with no hardware or
     license dependencies.
+
+  # Certsuite discovery labels applied after operator install so certsuite
+  # can find the operator CSV and its workload pods.
+  # Omit to use defaults: CSV gets "operator=target", all DaemonSets get
+  # "generic=target" on their pod templates.
+  discoveryLabels:
+    operator: "redhat-best-practices-for-k8s.com/operator=target"
+    pod: "redhat-best-practices-for-k8s.com/generic=target"
+    resources:
+      - kind: Deployment
 
   # Readiness checks -- the pipeline waits for these before running certsuite
   readiness:

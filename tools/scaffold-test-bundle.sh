@@ -20,7 +20,11 @@ CERTSUITE_CONFIG_SECRET parameter.
 
 Options:
   --name NAME          Bundle name (required)
-  --namespace NS       Target namespace for operands (default: auto)
+  --namespace NS       Target namespace for install + operands (default: auto)
+  --install-mode MODE  OLM install mode: AllNamespaces, OwnNamespace,
+                       SingleNamespace, MultiNamespace (default: empty = auto)
+  --workload-kind KIND Resource kind to apply discovery labels to
+                       (Deployment, DaemonSet, StatefulSet; default: DaemonSet)
   --output DIR         Output directory (default: ./certsuite-test-bundle)
   -h, --help           Show this help message
 EOF
@@ -28,14 +32,18 @@ EOF
 
 NAME=""
 NAMESPACE=""
+INSTALL_MODE=""
+WORKLOAD_KIND="DaemonSet"
 OUTPUT="./certsuite-test-bundle"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --name)      NAME="$2"; shift 2 ;;
-    --namespace) NAMESPACE="$2"; shift 2 ;;
-    --output)    OUTPUT="$2"; shift 2 ;;
-    -h|--help)   usage; exit 0 ;;
+    --name)          NAME="$2"; shift 2 ;;
+    --namespace)     NAMESPACE="$2"; shift 2 ;;
+    --install-mode)  INSTALL_MODE="$2"; shift 2 ;;
+    --workload-kind) WORKLOAD_KIND="$2"; shift 2 ;;
+    --output)        OUTPUT="$2"; shift 2 ;;
+    -h|--help)       usage; exit 0 ;;
     *) echo "Unknown option: $1"; usage; exit 1 ;;
   esac
 done
@@ -60,11 +68,27 @@ metadata:
   labels:
     app.kubernetes.io/part-of: ${NAME}
 spec:
+  # Namespace for operator install AND operand deployment.
+  # Leave empty to fall back to CSV suggested-namespace, then auto-generate.
   namespace: "${NAMESPACE}"
+
+  # OLM install mode. One of: AllNamespaces, OwnNamespace,
+  # SingleNamespace, MultiNamespace.
+  # Leave empty to auto-detect from CSV supported modes.
+  installMode: "${INSTALL_MODE}"
 
   description: |
     Software-only test deployment of ${NAME} operands.
     Deploys without hardware or license dependencies.
+
+  # Certsuite discovery labels for the operator CSV and workload pods.
+  # Omit to use defaults: CSV gets "operator=target", all DaemonSets get
+  # "generic=target" on their pod templates.
+  discoveryLabels:
+    operator: "redhat-best-practices-for-k8s.com/operator=target"
+    pod: "redhat-best-practices-for-k8s.com/generic=target"
+    resources:
+      - kind: ${WORKLOAD_KIND}
 
   # Optional CSV patches (JSON6902 or strategic-merge). Example:
   # csvPatches:

@@ -92,6 +92,12 @@ spec:
     - name: CERT_TRACK_SECRET_KEY
       type: string
       default: "api-token"
+    - name: PIPELINE_SCRIPTS_REF
+      type: string
+      default: "https://github.com/redhat-best-practices-for-k8s/konflux-certsuite.git@main"
+      description: |
+        Git URL for fetching pipeline helper scripts. Override to test
+        from a fork/branch. Format: URL[.git@revision]
 
   workspaces:
     - name: shared
@@ -305,6 +311,8 @@ spec:
           value: "$(tasks.get-unreleased-bundle.results.channelName)"
         - name: TEST_BUNDLE_REF
           value: $(params.TEST_BUNDLE_REF)
+        - name: PIPELINE_SCRIPTS_REF
+          value: $(params.PIPELINE_SCRIPTS_REF)
       workspaces:
         - name: shared
           workspace: shared

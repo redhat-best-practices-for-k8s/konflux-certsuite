@@ -55,6 +55,14 @@ spec:
 
         Leave unset for released operators that pull from registry.redhat.io
         (or when the FBC is not on quay.io/redhat-user-workloads).
+    - name: PIPELINE_SCRIPTS_REF
+      type: string
+      default: "https://github.com/redhat-best-practices-for-k8s/konflux-certsuite.git@main"
+      description: |
+        Git URL for fetching pipeline helper scripts (resolve-bundle-config.sh,
+        wait-for-readiness.sh). Defaults to upstream main. Override to test
+        from a fork/branch.
+        Format: URL[.git@revision]
     - name: OCI_PUSH_SECRET
       type: string
       default: "oci-push-secret-not-configured"
@@ -511,6 +519,8 @@ spec:
           value: $(params.OCI_RESULTS_REPO)
         - name: ociResultsSecret
           value: $(params.OCI_RESULTS_SECRET)
+        - name: pipelineScriptsRef
+          value: $(params.PIPELINE_SCRIPTS_REF)
       taskSpec:
         params:
           - name: eaasSpaceSecretRef
@@ -534,6 +544,8 @@ spec:
           - name: ociResultsRepo
             type: string
           - name: ociResultsSecret
+            type: string
+          - name: pipelineScriptsRef
             type: string
         volumes:
           - name: credentials
@@ -566,7 +578,60 @@ spec:
               - name: credentials
                 value: credentials
 
-          # ── Step 2: Deploy operator via OLM ──────────────────────────
+          # ── Step 2: Fetch test bundle ─────────────────────────────────
+          - name: fetch-test-bundle
+            image: quay.io/konflux-ci/konflux-test:v1.4.31@sha256:a7cae9e96663e277a3904d0c78630508ddb6cc8eebaa912a840bd20f68dcaad1
+            env:
+              - name: TEST_BUNDLE_REF
+                value: "$(params.testBundleRef)"
+              - name: PIPELINE_SCRIPTS_REF
+                value: "$(params.pipelineScriptsRef)"
+            script: |
+              #!/usr/bin/env bash
+              set -euo pipefail
+
+              _parse_ref() {
+                local ref="$1"
+                GIT_PATH="${ref#*#}"; local url="${ref%%#*}"
+                [[ "${GIT_PATH}" == "${ref}" ]] && GIT_PATH="."
+                if [[ "${url}" == *".git@"* ]]; then
+                  GIT_URL="${url%@*}"; GIT_REF="${url##*.git@}"
+                elif [[ "${url}" =~ ^(https://[^@]+)@([^@]+)$ ]]; then
+                  GIT_URL="${BASH_REMATCH[1]}"; GIT_REF="${BASH_REMATCH[2]}"
+                else
+                  GIT_URL="${url}"; GIT_REF="main"
+                fi
+                GIT_URL="${GIT_URL%.git}"
+              }
+
+              _download() {
+                local tmp; tmp=$(mktemp -d)
+                curl -sL "${GIT_URL}/archive/${GIT_REF}.tar.gz" | tar xz -C "${tmp}" --strip-components=1
+                echo "${tmp}"
+              }
+
+              # Fetch test bundle
+              _parse_ref "${TEST_BUNDLE_REF}"
+              BUNDLE_DIR="/workspace/test-bundle"; mkdir -p "${BUNDLE_DIR}"
+              echo "[$(date -u +%FT%T.%3NZ)] Downloading bundle from ${GIT_URL} ref=${GIT_REF} path=${GIT_PATH}"
+              TMP=$(_download); cp -r "${TMP}/${GIT_PATH}/." "${BUNDLE_DIR}/"; rm -rf "${TMP}"
+
+              if [[ ! -f "${BUNDLE_DIR}/certsuite-test-bundle.yaml" ]]; then
+                echo "ERROR: certsuite-test-bundle.yaml not found in ${GIT_PATH}" >&2
+                exit 1
+              fi
+              ls -la "${BUNDLE_DIR}/"
+
+              # Fetch helper scripts
+              _parse_ref "${PIPELINE_SCRIPTS_REF}"
+              SCRIPTS_DIR="/workspace/scripts"; mkdir -p "${SCRIPTS_DIR}"
+              echo "[$(date -u +%FT%T.%3NZ)] Fetching helper scripts from ${GIT_URL} ref=${GIT_REF}"
+              TMP=$(_download)
+              cp "${TMP}/scripts/resolve-bundle-config.sh" "${TMP}/scripts/wait-for-readiness.sh" "${SCRIPTS_DIR}/"
+              chmod +x "${SCRIPTS_DIR}"/*.sh; rm -rf "${TMP}"
+              echo "[$(date -u +%FT%T.%3NZ)] Helper scripts installed"
+
+          # ── Step 3: Deploy operator via OLM ──────────────────────────
           - name: deploy-operator
             image: quay.io/konflux-ci/konflux-test:v1.4.31@sha256:a7cae9e96663e277a3904d0c78630508ddb6cc8eebaa912a840bd20f68dcaad1
             onError: continue
@@ -640,12 +705,25 @@ spec:
               echo "[$(date -u +%FT%T.%3NZ)] Bundle image (via IDMS): $(jq -r 'select(.schema == "olm.bundle") | .image' /tmp/fbc.json | head -1)"
               echo "[$(date -u +%FT%T.%3NZ)] Unreleased bundle result: ${BUNDLE_IMAGE}"
 
-              # ── Determine install namespace from FBC metadata ────────────────
-              INSTALL_NAMESPACE=$(jq -r 'select(.schema == "olm.bundle") | .properties[]? |
-                select(.type == "olm.csv.metadata") | .value.annotations["operatorframework.io/suggested-namespace"] // empty' \
-                /tmp/fbc.json 2>/dev/null | grep -v '^$' | head -1)
+              # ── Resolve install config from test bundle ─────────────────────
+              CSV_SUGGESTED_NS=$(jq -r 'select(.schema == "olm.bundle") | .properties[]? |
+                select(.type == "olm.csv.metadata") |
+                .value.annotations["operatorframework.io/suggested-namespace"] // empty' \
+                /tmp/fbc.json 2>/dev/null | grep -v '^$' | head -1) || CSV_SUGGESTED_NS=""
 
-              if [[ -z "${INSTALL_NAMESPACE}" || "${INSTALL_NAMESPACE}" == "null" ]]; then
+              CSV_INSTALL_MODES=$(jq -r 'select(.schema == "olm.bundle") | .properties[]? |
+                select(.type == "olm.csv.metadata") |
+                .value.installModes[]? | select(.supported == true) | .type' \
+                /tmp/fbc.json 2>/dev/null | grep -v '^$') || CSV_INSTALL_MODES=""
+
+              echo "[$(date -u +%FT%T.%3NZ)] CSV fallbacks: suggested-ns='${CSV_SUGGESTED_NS}' modes='$(echo ${CSV_INSTALL_MODES} | tr '\n' ',')'"
+
+              export CSV_SUGGESTED_NS CSV_INSTALL_MODES
+              BUNDLE_DIR="/workspace/test-bundle"
+              source /workspace/scripts/resolve-bundle-config.sh
+
+              INSTALL_NAMESPACE="${BUNDLE_NAMESPACE}"
+              if [[ -z "${INSTALL_NAMESPACE}" ]]; then
                 INSTALL_NAMESPACE=$(oc create -f - -o jsonpath='{.metadata.name}' <<NS_EOF
               apiVersion: v1
               kind: Namespace
@@ -660,9 +738,14 @@ spec:
               echo "[$(date -u +%FT%T.%3NZ)] Namespace: ${INSTALL_NAMESPACE}"
               echo -n "${INSTALL_NAMESPACE}" > /workspace/install-namespace
 
-              # ── OperatorGroup (OwnNamespace) ─────────────────────────────────
+              # ── OperatorGroup (mode-aware) ──────────────────────────────────
               EXISTING_OG=$(oc -n "${INSTALL_NAMESPACE}" get operatorgroup -o jsonpath="{.items[*].metadata.name}" 2>/dev/null || true)
               if [[ -z "${EXISTING_OG}" ]]; then
+                OG_SPEC=""
+                if [[ -n "${OG_TARGET_NS}" ]]; then
+                  OG_SPEC="targetNamespaces:
+                    - ${OG_TARGET_NS}"
+                fi
                 oc create -f - <<OG_EOF
               apiVersion: operators.coreos.com/v1
               kind: OperatorGroup
@@ -670,8 +753,7 @@ spec:
                 generateName: oo-
                 namespace: ${INSTALL_NAMESPACE}
               spec:
-                targetNamespaces:
-                  - ${INSTALL_NAMESPACE}
+                ${OG_SPEC}
               OG_EOF
               fi
 
@@ -891,15 +973,24 @@ spec:
                     --type merge --subresource status \
                     -p "{\"status\":{\"installedCSV\":\"${CSV}\"}}" 2>&1 || true
 
+                  # Apply discovery labels from bundle config
+                  LABEL_KEY="${DISCOVERY_OPERATOR_LABEL%%=*}"
+                  LABEL_VAL="${DISCOVERY_OPERATOR_LABEL#*=}"
                   oc label csv "${CSV}" -n "${INSTALL_NAMESPACE}" \
-                    "redhat-best-practices-for-k8s.com/operator=target" --overwrite 2>&1
+                    "${LABEL_KEY}=${LABEL_VAL}" --overwrite 2>&1
 
-                  DS_NAMES=$(oc get daemonsets -n "${INSTALL_NAMESPACE}" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
-                  for DS in ${DS_NAMES}; do
-                    echo "[$(date -u +%FT%T.%3NZ)] Patching DaemonSet ${DS} with certsuite labels..."
-                    oc patch daemonset "${DS}" -n "${INSTALL_NAMESPACE}" --type=merge \
-                      -p '{"spec":{"template":{"metadata":{"labels":{"redhat-best-practices-for-k8s.com/generic":"target"}}}}}' 2>&1
-                    oc rollout status daemonset/"${DS}" -n "${INSTALL_NAMESPACE}" --timeout=120s 2>&1 || true
+                  POD_LABEL_KEY="${DISCOVERY_POD_LABEL%%=*}"
+                  POD_LABEL_VAL="${DISCOVERY_POD_LABEL#*=}"
+                  for RESOURCE_KIND in ${DISCOVERY_RESOURCE_KINDS}; do
+                    LOWER_KIND=$(echo "${RESOURCE_KIND}" | tr '[:upper:]' '[:lower:]')
+                    NAMES=$(oc get "${LOWER_KIND}" -n "${INSTALL_NAMESPACE}" \
+                      -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
+                    for RNAME in ${NAMES}; do
+                      echo "[$(date -u +%FT%T.%3NZ)] Patching ${RESOURCE_KIND} ${RNAME} with discovery label..."
+                      oc patch "${LOWER_KIND}" "${RNAME}" -n "${INSTALL_NAMESPACE}" --type=merge \
+                        -p "{\"spec\":{\"template\":{\"metadata\":{\"labels\":{\"${POD_LABEL_KEY}\":\"${POD_LABEL_VAL}\"}}}}}" 2>&1
+                      oc rollout status "${LOWER_KIND}/${RNAME}" -n "${INSTALL_NAMESPACE}" --timeout=120s 2>&1 || true
+                    done
                   done
 
                   exit 0
@@ -918,7 +1009,7 @@ spec:
               oc get events -n "${INSTALL_NAMESPACE}" --sort-by='.lastTimestamp' | tail -40 >&2 || true
               exit 1
 
-          # ── Step 3: Deploy operands from test bundle ─────────────────
+          # ── Step 4: Deploy operands from test bundle ─────────────────
           - name: deploy-operands
             image: quay.io/konflux-ci/konflux-test:v1.4.31@sha256:a7cae9e96663e277a3904d0c78630508ddb6cc8eebaa912a840bd20f68dcaad1
             volumeMounts:
@@ -927,59 +1018,18 @@ spec:
             env:
               - name: KUBECONFIG
                 value: "/credentials/$(steps.get-kubeconfig.results.kubeconfig)"
-              - name: TEST_BUNDLE_REF
-                value: "$(params.testBundleRef)"
             script: |
               #!/usr/bin/env bash
               set -euo pipefail
 
+              BUNDLE_DIR="/workspace/test-bundle"
               INSTALL_NAMESPACE=""
               [[ -f /workspace/install-namespace ]] && INSTALL_NAMESPACE=$(cat /workspace/install-namespace)
 
-              # Reuse bundle fetched during deploy-operator (CSV patches), or fetch now
-              BUNDLE_DIR="/workspace/test-bundle"
-              if [[ ! -f "${BUNDLE_DIR}/certsuite-test-bundle.yaml" ]]; then
-                mkdir -p "${BUNDLE_DIR}"
-
-                FULL_URL="${TEST_BUNDLE_REF%%#*}"
-                BUNDLE_PATH="${TEST_BUNDLE_REF#*#}"
-                [[ "${BUNDLE_PATH}" == "${TEST_BUNDLE_REF}" ]] && BUNDLE_PATH="."
-
-                if [[ "${FULL_URL}" == *".git@"* ]]; then
-                  GIT_URL="${FULL_URL%@*}"
-                  GIT_REF="${FULL_URL##*.git@}"
-                elif [[ "${FULL_URL}" =~ ^(https://[^@]+)@([^@]+)$ ]]; then
-                  GIT_URL="${BASH_REMATCH[1]}"
-                  GIT_REF="${BASH_REMATCH[2]}"
-                else
-                  GIT_URL="${FULL_URL}"
-                  GIT_REF="main"
-                fi
-                GIT_URL="${GIT_URL%.git}"
-
-                echo "[$(date -u +%FT%T.%3NZ)] Downloading ${GIT_URL} ref=${GIT_REF} (path: ${BUNDLE_PATH})"
-                CLONE_DIR=$(mktemp -d)
-                curl -sL "${GIT_URL}/archive/${GIT_REF}.tar.gz" | tar xz -C "${CLONE_DIR}" --strip-components=1
-                cp -r "${CLONE_DIR}/${BUNDLE_PATH}/." "${BUNDLE_DIR}/"
-                rm -rf "${CLONE_DIR}"
-              else
-                echo "[$(date -u +%FT%T.%3NZ)] Reusing test bundle from deploy-operator"
-              fi
-
-              if [[ ! -f "${BUNDLE_DIR}/certsuite-test-bundle.yaml" ]]; then
-                echo "ERROR: certsuite-test-bundle.yaml not found" >&2
-                exit 1
-              fi
-
-              # Determine target namespace
-              TARGET_NS=$(grep -A1 'namespace:' "${BUNDLE_DIR}/certsuite-test-bundle.yaml" | tail -1 | awk '{print $NF}' || echo "")
-              TARGET_NS="${TARGET_NS:-${INSTALL_NAMESPACE}}"
+              source /workspace/scripts/resolve-bundle-config.sh
+              TARGET_NS="${INSTALL_NAMESPACE}"
 
               echo "[$(date -u +%FT%T.%3NZ)] Deploying operands to: ${TARGET_NS}"
-
-              if [[ -n "${TARGET_NS}" && "${TARGET_NS}" != "${INSTALL_NAMESPACE}" ]]; then
-                oc create namespace "${TARGET_NS}" 2>/dev/null || true
-              fi
 
               # Apply prerequisites
               if [[ -d "${BUNDLE_DIR}/prerequisites" ]]; then
@@ -991,16 +1041,12 @@ spec:
                 oc apply -n "${TARGET_NS}" -f "${BUNDLE_DIR}/operands/"
               fi
 
-              # Wait for deployments
-              DEPS=$(oc get deployments -n "${TARGET_NS}" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
-              for DEP in ${DEPS}; do
-                echo "  Waiting for deployment/${DEP}..."
-                oc rollout status "deployment/${DEP}" -n "${TARGET_NS}" --timeout=300s || true
-              done
+              # Readiness checks from bundle (same logic as shared-cluster path)
+              source /workspace/scripts/wait-for-readiness.sh
 
               echo "[$(date -u +%FT%T.%3NZ)] Operand deployment complete"
 
-          # ── Step 4: Run certsuite ────────────────────────────────────
+          # ── Step 5: Run certsuite ────────────────────────────────────
           - name: run-certsuite
             image: quay.io/redhat-best-practices-for-k8s/certsuite:latest
             onError: continue

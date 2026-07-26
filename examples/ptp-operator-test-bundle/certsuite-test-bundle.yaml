@@ -7,6 +7,9 @@ metadata:
 spec:
   namespace: openshift-ptp
 
+  # PTP supports OwnNamespace and SingleNamespace; use OwnNamespace for test.
+  installMode: OwnNamespace
+
   description: |
     Software-only test deployment of ptp-operator operands. Creates a
     PtpConfig CR that exercises the operator's reconciliation logic
@@ -14,6 +17,13 @@ spec:
     will be scheduled on worker nodes and the operator will process the
     configuration, which is sufficient to verify the operator is
     properly deployed and functioning.
+
+  # PTP workloads are DaemonSets, not Deployments.
+  discoveryLabels:
+    operator: "redhat-best-practices-for-k8s.com/operator=target"
+    pod: "redhat-best-practices-for-k8s.com/generic=target"
+    resources:
+      - kind: DaemonSet
 
   # Optional CSV patches applied after OLM creates the CSV and before
   # waiting for Succeeded. These are required for HyperShift EaaS guests
@@ -26,8 +36,6 @@ spec:
     timeout: 300
     checks:
       # Rollout readiness (waits for pods to be Running)
-      - kind: Deployment
-        name: ptp-operator-controller-manager
       - kind: DaemonSet
         name: linuxptp-daemon
       # Presence checks (verifies the resource exists)

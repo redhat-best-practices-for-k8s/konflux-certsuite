@@ -75,6 +75,60 @@ if [[ -f "${BUNDLE_DIR}/certsuite-test-bundle.yaml" ]]; then
     warn "No readiness checks defined (pipeline may not wait for operands)"
   fi
 
+  # Validate installMode
+  INSTALL_MODE=$(grep -E '^\s*installMode:' "${BUNDLE_DIR}/certsuite-test-bundle.yaml" \
+    | head -1 | awk '{print $2}' | tr -d '"' || echo "")
+  if [[ -n "${INSTALL_MODE}" ]]; then
+    case "${INSTALL_MODE}" in
+      AllNamespaces|OwnNamespace|SingleNamespace|MultiNamespace)
+        pass "installMode: ${INSTALL_MODE}"
+        ;;
+      *)
+        fail "installMode '${INSTALL_MODE}' is not valid. Use AllNamespaces, OwnNamespace, SingleNamespace, or MultiNamespace."
+        ;;
+    esac
+
+    NAMESPACE_VAL=$(grep -E '^\s*namespace:' "${BUNDLE_DIR}/certsuite-test-bundle.yaml" \
+      | head -1 | awk '{print $2}' | tr -d '"' || echo "")
+    if [[ "${INSTALL_MODE}" == "SingleNamespace" || "${INSTALL_MODE}" == "MultiNamespace" ]]; then
+      if [[ -z "${NAMESPACE_VAL}" ]]; then
+        warn "installMode=${INSTALL_MODE} but no namespace is set. Pipeline will fail without a target namespace."
+      fi
+    fi
+  fi
+
+  # Validate discoveryLabels.resources[].kind
+  if grep -q "discoveryLabels:" "${BUNDLE_DIR}/certsuite-test-bundle.yaml"; then
+    IN_DISCOVERY=false
+    IN_RESOURCES=false
+    while IFS= read -r line; do
+      if echo "${line}" | grep -q "discoveryLabels:"; then
+        IN_DISCOVERY=true
+        continue
+      fi
+      if ${IN_DISCOVERY} && echo "${line}" | grep -q "resources:"; then
+        IN_RESOURCES=true
+        continue
+      fi
+      if ${IN_RESOURCES}; then
+        if echo "${line}" | grep -qE '^\s+- kind:'; then
+          KIND=$(echo "${line}" | awk '{print $NF}' | tr -d '"')
+          case "${KIND}" in
+            Deployment|DaemonSet|StatefulSet)
+              pass "discoveryLabels resource kind: ${KIND}"
+              ;;
+            *)
+              fail "discoveryLabels resource kind '${KIND}' is not valid. Use Deployment, DaemonSet, or StatefulSet."
+              ;;
+          esac
+        elif echo "${line}" | grep -qE '^[[:space:]]*[a-zA-Z]' && ! echo "${line}" | grep -qE '^\s+-'; then
+          IN_RESOURCES=false
+          IN_DISCOVERY=false
+        fi
+      fi
+    done < "${BUNDLE_DIR}/certsuite-test-bundle.yaml"
+  fi
+
   if grep -q "csvPatches:" "${BUNDLE_DIR}/certsuite-test-bundle.yaml"; then
     pass "csvPatches declared"
   elif [[ -d "${BUNDLE_DIR}/csv-patches" ]]; then

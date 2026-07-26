@@ -22,8 +22,11 @@ cluster is automatically destroyed when the PipelineRun completes.
    (from `TEST_BUNDLE_REF` repo by default) → Hypershift `imageContentSources`
 6. `provision-cluster` -- create ephemeral cluster with those mirrors (HCCO
    applies a managed IDMS; `registry.redhat.io` pulls redirect to quay.io)
-7. `deploy-and-test` -- standard CatalogSource from FBC image, OLM install,
-   optional CSV patches from the test bundle, operands, certsuite
+7. `deploy-and-test` -- fetches the test bundle, reads install config
+   (`namespace`, `installMode`, `discoveryLabels`) from it, deploys the
+   operator via OLM with the correct OperatorGroup, applies optional CSV
+   patches, applies discovery labels to the CSV and workload pods,
+   deploys operands, runs certsuite
 
 ### Minimum Parameters
 
@@ -103,8 +106,10 @@ cluster state management.
 2. `get-unreleased-bundle` -- get operator bundle from FBC
 3. `acquire-cluster-lock` -- Lease mutex on shared cluster
 4. `oadp-restore-pre` -- restore to clean baseline (first run creates backup)
-5. `deploy-operator` -- install via OLM
-6. `deploy-operands` -- apply test bundle manifests
+5. `deploy-operator` -- fetches the test bundle, reads install config
+   from it, installs operator via OLM with bundle-driven namespace,
+   installMode, and discovery labels
+6. `deploy-operands` -- apply test bundle manifests, run readiness checks
 7. `run-certsuite` -- run test suites
 8. `collect-results` -- optionally push results
 9. **finally:** cleanup-operator, oadp-restore-post, release-cluster-lock
