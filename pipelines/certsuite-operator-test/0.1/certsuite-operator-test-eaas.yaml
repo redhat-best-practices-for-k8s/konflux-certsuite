@@ -1045,7 +1045,15 @@ spec:
                 echo "  oras pull ${OCI_REF}"
                 echo "  tar xzf certsuite-results.tar.gz"
               else
-                echo "ERROR: OCI push failed"
+                # Non-fatal: match existing OCI push policy (onError: continue).
+                echo "ERROR: OCI push failed (non-fatal; pipeline continues)"
+                echo "       Target: ${OCI_REF}"
+                if [ "${USE_EXTERNAL}" = "true" ]; then
+                  echo "       Check OCI_RESULTS_SECRET has push access to ${IMAGE_REF}."
+                else
+                  echo "       Check OCI_PUSH_SECRET has push access to ${IMAGE_REF}."
+                fi
+                exit 1
               fi
 
     # Results are pushed to either:

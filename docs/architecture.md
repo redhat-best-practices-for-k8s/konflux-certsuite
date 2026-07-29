@@ -199,6 +199,9 @@ Results are pushed as OCI artifacts (via `oras`) with artifact type
 `@digest`). Host:port forms such as `registry.example.com:5000/repo` are
 accepted. When the external repo is set without a usable
 `OCI_RESULTS_SECRET`, the step fails explicitly (no credential fallback).
+Push failures and misconfigured credentials log a clear ERROR (target +
+secret to fix); the step uses `onError: continue` so the PipelineRun is
+not failed — same non-fatal policy as the original component-repo push.
 
 Download results:
 ```bash

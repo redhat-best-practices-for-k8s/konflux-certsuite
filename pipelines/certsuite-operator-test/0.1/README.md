@@ -74,7 +74,16 @@ the external registry, and vice-versa. External tags include the operator
 package name (`certsuite-results-<package>-<timestamp>`) to prevent collisions
 when multiple operators share one repo.
 
-Download from the `push-results` log line:
+**Failure policy** (`push-results` uses `onError: continue` — never fails the PipelineRun):
+
+| Situation | Behavior |
+|-----------|----------|
+| `OCI_RESULTS_REPO` unset | Component-repo path (unchanged). Missing `OCI_PUSH_SECRET` → WARNING + skip. |
+| `OCI_RESULTS_REPO` set, secret missing/empty | ERROR and step fails clearly (no fallback to `OCI_PUSH_SECRET`). |
+| `OCI_RESULTS_REPO` has a tag/digest | ERROR: must be a bare repo reference. |
+| `oras push` auth/network failure | ERROR naming the target + which secret to fix; step fails, pipeline continues. |
+
+Download from the `push-results` log line after a successful push:
 
 ```bash
 oras pull <host>/<repo>:certsuite-results-<package>-<timestamp>
