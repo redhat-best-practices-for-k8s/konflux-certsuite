@@ -1049,7 +1049,8 @@ spec:
               fi
 
     # Results are pushed to either:
-    #   a) the same Quay repo as the FBC/component image (OCI_PUSH_SECRET), or
-    #   b) an external repo (OCI_RESULTS_REPO + OCI_RESULTS_SECRET).
-    # Tagged certsuite-results-<package>-<timestamp>. Download with:
-    #   oras pull <OCI_REF printed in push-results logs>
+    #   a) the same Quay repo as the FBC/component image (OCI_PUSH_SECRET),
+    #      tagged certsuite-results-<timestamp>, or
+    #   b) an external repo (OCI_RESULTS_REPO + OCI_RESULTS_SECRET),
+    #      tagged certsuite-results-<package>-<timestamp>.
+    # Download with: oras pull <OCI_REF printed in push-results logs>

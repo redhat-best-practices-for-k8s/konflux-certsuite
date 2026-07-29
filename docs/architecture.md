@@ -187,15 +187,18 @@ flowchart TD
 ### OCI Results Storage
 
 Results are pushed as OCI artifacts (via `oras`) with artifact type
-`application/vnd.certsuite.results.v1+gzip`. Two modes are supported:
+`application/vnd.certsuite.results.v1+gzip`. Two modes are supported
+(EaaS pipeline):
 
-| Mode | Parameters | Description |
-|------|-----------|-------------|
-| **Component repo** (default) | `OCI_PUSH_SECRET` | Results are tagged on the same Quay repo as the FBC/component image. |
-| **External repo** | `OCI_RESULTS_REPO` + `OCI_RESULTS_SECRET` | Results are pushed to a dedicated external registry. Credentials are isolated — the component push secret is never sent to the external registry. |
+| Mode | Parameters | Tag format | Description |
+|------|-----------|------------|-------------|
+| **Component repo** (default) | `OCI_PUSH_SECRET` | `certsuite-results-<timestamp>` | Results are tagged on the same Quay repo as the FBC/component image. |
+| **External repo** | `OCI_RESULTS_REPO` + `OCI_RESULTS_SECRET` | `certsuite-results-<package>-<timestamp>` | Results are pushed to a dedicated OCI registry (Quay, docker.io, or any OCI-compliant host). Credentials are isolated — the component push secret is never sent to the external registry. |
 
-Tags include the operator package name to avoid collisions when multiple
-operators share the same external repo: `certsuite-results-<package>-<timestamp>`.
+`OCI_RESULTS_REPO` must be a bare repository reference (no `:tag` or
+`@digest`). Host:port forms such as `registry.example.com:5000/repo` are
+accepted. When the external repo is set without a usable
+`OCI_RESULTS_SECRET`, the step fails explicitly (no credential fallback).
 
 Download results:
 ```bash
@@ -223,9 +226,14 @@ For each `(operator, release)` pair:
 3. Create an `IntegrationTestScenario` in your Konflux tenant config.
    See [examples/integration-test-scenario.yaml](../examples/integration-test-scenario.yaml).
 4. Ensure the required Secrets exist in your tenant namespace:
-   - `shared-cluster-kubeconfig` -- kubeconfig for the shared cluster
-   - `cert-track-api-token` -- API token for cert-track-results
-   - `quay-dockerconfig` -- OCI registry credentials
-   - (EaaS, optional) external OCI results secret -- if using `OCI_RESULTS_REPO`
+   - **EaaS (recommended):**
+     - (optional) component ImageRepository push secret via `OCI_PUSH_SECRET`
+     - (optional) external results secret via `OCI_RESULTS_SECRET` when
+       using `OCI_RESULTS_REPO` (must be `kubernetes.io/dockerconfigjson`
+       with push access to that repo)
+   - **Shared cluster:**
+     - `shared-cluster-kubeconfig` -- kubeconfig for the shared cluster
+     - `cert-track-api-token` -- API token for cert-track-results (optional)
+     - registry credentials for `OCI_REF` (optional)
 5. Merge a change to your FBC component -- the pipeline triggers
    automatically on push events.

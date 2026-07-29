@@ -38,17 +38,48 @@ FBC is not on `quay.io/redhat-user-workloads`).
 
 ### OCI Results Storage
 
-By default results are pushed to the component's Quay repo (via `OCI_PUSH_SECRET`).
-To push to an **external** registry instead:
+By default results are pushed to the component's Quay repo (via `OCI_PUSH_SECRET`)
+with tag `certsuite-results-<timestamp>`.
+
+To push to an **external** OCI registry instead (Quay, docker.io, or any
+OCI-compliant host):
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
-| `OCI_RESULTS_REPO` | Yes | Bare OCI repo reference (e.g. `quay.io/my-org/certsuite-results`). Must not include a tag or digest. |
-| `OCI_RESULTS_SECRET` | Yes | `kubernetes.io/dockerconfigjson` Secret with push access to `OCI_RESULTS_REPO`. |
+| `OCI_RESULTS_REPO` | Yes | Bare OCI repo reference (e.g. `quay.io/my-org/certsuite-results` or `docker.io/my-org/certsuite-results`). Must not include a tag or digest. |
+| `OCI_RESULTS_SECRET` | Yes | Name of a `kubernetes.io/dockerconfigjson` Secret in the tenant namespace with push access to `OCI_RESULTS_REPO`. |
+
+Create the secret (example for docker.io / Hub):
+
+```bash
+oc create secret docker-registry certsuite-results-push-secret \
+  --docker-server=https://index.docker.io/v1/ \
+  --docker-username=<username> \
+  --docker-password=<token-or-password> \
+  -n <tenant-namespace>
+```
+
+Then set in your `IntegrationTestScenario`:
+
+```yaml
+params:
+  - name: OCI_RESULTS_REPO
+    value: "docker.io/<org>/<repo>"
+  - name: OCI_RESULTS_SECRET
+    value: "certsuite-results-push-secret"
+```
 
 Credentials are strictly isolated: the component push secret is never sent to
-the external registry, and vice-versa. Tags include the operator package name
-to prevent collisions in shared repos.
+the external registry, and vice-versa. External tags include the operator
+package name (`certsuite-results-<package>-<timestamp>`) to prevent collisions
+when multiple operators share one repo.
+
+Download from the `push-results` log line:
+
+```bash
+oras pull <host>/<repo>:certsuite-results-<package>-<timestamp>
+tar xzf certsuite-results.tar.gz
+```
 
 ## Shared Cluster Variant
 
