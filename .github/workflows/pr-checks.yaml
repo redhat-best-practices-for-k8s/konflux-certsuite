@@ -1,0 +1,60 @@
+name: PR Checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.number || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  yamllint:
+    name: YAML Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v7
+
+      - name: Run yamllint
+        uses: ibiqlik/action-yamllint@v3
+        with:
+          config_file: .github/linters/.yamllint.yml
+
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v7
+
+      - name: Run ShellCheck
+        uses: ludeeus/action-shellcheck@master
+        with:
+          scandir: .
+          severity: warning
+
+  validate-test-bundles:
+    name: Validate Example Test Bundles
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v7
+
+      - name: Validate example test bundles
+        run: |
+          EXIT_CODE=0
+          for bundle_dir in examples/*/; do
+            if [[ -f "${bundle_dir}/certsuite-test-bundle.yaml" ]]; then
+              echo "--- Validating: ${bundle_dir} ---"
+              ./tools/validate-test-bundle.sh "${bundle_dir}" || EXIT_CODE=1
+              echo ""
+            fi
+          done
+          exit ${EXIT_CODE}
