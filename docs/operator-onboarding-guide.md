@@ -228,7 +228,8 @@ that you can customize.
 
 ### Option A: EaaS (Recommended)
 
-No Secrets or infrastructure to manage. Each run gets a fresh cluster.
+No kubeconfig, locks, or OADP to manage. Each run gets a fresh cluster.
+OCI results push is optional and needs a registry Secret only if you enable it.
 
 1. **Push the test bundle** to your operator's git repository.
 
@@ -249,7 +250,32 @@ No Secrets or infrastructure to manage. Each run gets a fresh cluster.
          value: pipelines/certsuite-operator-test/0.1/certsuite-operator-test-eaas.yaml
    ```
 
-3. **Merge a change** to your FBC component. The pipeline triggers
+3. **(Optional) Configure OCI results storage.** By default, results can be
+   pushed to the component Quay repo with `OCI_PUSH_SECRET`. To use a
+   dedicated external registry instead:
+
+   ```bash
+   oc create secret docker-registry certsuite-results-push-secret \
+     --docker-server=<registry-host> \
+     --docker-username=<username> \
+     --docker-password=<token-or-password> \
+     -n <tenant-namespace>
+   ```
+
+   ```yaml
+   params:
+     - name: TEST_BUNDLE_REF
+       value: "https://github.com/org/repo.git#certsuite-test-bundle"
+     - name: OCI_RESULTS_REPO
+       value: "quay.io/<org>/certsuite-results"   # bare repo, no tag/digest
+     - name: OCI_RESULTS_SECRET
+       value: "certsuite-results-push-secret"
+   ```
+
+   See [OCI Results Storage](../pipelines/certsuite-operator-test/0.1/README.md#oci-results-storage)
+   for tag formats, validation rules, and download instructions.
+
+4. **Merge a change** to your FBC component. The pipeline triggers
    automatically on push events.
 
 ### Option B: Shared Cluster

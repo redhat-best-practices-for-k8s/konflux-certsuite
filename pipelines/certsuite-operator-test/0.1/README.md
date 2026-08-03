@@ -36,6 +36,60 @@ cluster is automatically destroyed when the PipelineRun completes.
 Released operators on `registry.redhat.io` need no mirror set (skipped when the
 FBC is not on `quay.io/redhat-user-workloads`).
 
+### OCI Results Storage
+
+By default results are pushed to the component's Quay repo (via `OCI_PUSH_SECRET`)
+with tag `certsuite-results-<timestamp>`.
+
+To push to an **external** OCI registry instead (Quay, docker.io, or any
+OCI-compliant host):
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `OCI_RESULTS_REPO` | Yes | Bare OCI repo reference (e.g. `quay.io/my-org/certsuite-results` or `docker.io/my-org/certsuite-results`). Must not include a tag or digest. |
+| `OCI_RESULTS_SECRET` | Yes | Name of a `kubernetes.io/dockerconfigjson` Secret in the tenant namespace with push access to `OCI_RESULTS_REPO`. |
+
+Create the secret (example for docker.io / Hub):
+
+```bash
+oc create secret docker-registry certsuite-results-push-secret \
+  --docker-server=https://index.docker.io/v1/ \
+  --docker-username=<username> \
+  --docker-password=<token-or-password> \
+  -n <tenant-namespace>
+```
+
+Then set in your `IntegrationTestScenario`:
+
+```yaml
+params:
+  - name: OCI_RESULTS_REPO
+    value: "docker.io/<org>/<repo>"
+  - name: OCI_RESULTS_SECRET
+    value: "certsuite-results-push-secret"
+```
+
+Credentials are strictly isolated: the component push secret is never sent to
+the external registry, and vice-versa. External tags include the operator
+package name (`certsuite-results-<package>-<timestamp>`) to prevent collisions
+when multiple operators share one repo.
+
+**Failure policy** (`push-results` uses `onError: continue` — never fails the PipelineRun):
+
+| Situation | Behavior |
+|-----------|----------|
+| `OCI_RESULTS_REPO` unset | Component-repo path (unchanged). Missing `OCI_PUSH_SECRET` → WARNING + skip. |
+| `OCI_RESULTS_REPO` set, secret missing/empty | ERROR and step fails clearly (no fallback to `OCI_PUSH_SECRET`). |
+| `OCI_RESULTS_REPO` has a tag/digest | ERROR: must be a bare repo reference. |
+| `oras push` auth/network failure | ERROR naming the target + which secret to fix; step fails, pipeline continues. |
+
+Download from the `push-results` log line after a successful push:
+
+```bash
+oras pull <host>/<repo>:certsuite-results-<package>-<timestamp>
+tar xzf certsuite-results.tar.gz
+```
+
 ## Shared Cluster Variant
 
 **File:** `certsuite-operator-test.yaml`

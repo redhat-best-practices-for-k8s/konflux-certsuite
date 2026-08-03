@@ -35,7 +35,18 @@ spec:
     # Optional:
     # - CERTSUITE_LABELS: default "common"
     # - PACKAGE_NAME / CHANNEL_NAME: auto-detected from FBC when empty
-    # - OCI_PUSH_SECRET: Quay push secret for certsuite results
+    # - OCI_PUSH_SECRET: dockerconfigjson Secret for results on the component Quay repo
+    #
+    # External OCI results storage (any OCI registry — Quay, docker.io, …):
+    # Create the Secret first, then set both params (no credential fallback):
+    #   oc create secret docker-registry certsuite-results-push-secret \
+    #     --docker-server=<registry-host> \
+    #     --docker-username=<user> --docker-password=<token> \
+    #     -n <tenant-namespace>
+    # - name: OCI_RESULTS_REPO
+    #   value: "quay.io/<org>/certsuite-results"   # bare repo only (no :tag / @digest)
+    # - name: OCI_RESULTS_SECRET
+    #   value: "certsuite-results-push-secret"
   resolverRef:
     resolver: git
     params:
