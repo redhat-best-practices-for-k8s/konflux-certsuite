@@ -146,13 +146,15 @@ managed separately via the `CERTSUITE_CONFIG_SECRET` pipeline parameter.
 
 ```
 my-operator-test-bundle/
-  certsuite-test-bundle.yaml    # Bundle metadata (namespace, readiness, etc.)
+  certsuite-test-bundle.yaml    # Bundle metadata (namespace, readiness, csvPatches, etc.)
   prerequisites/                # (optional) Secrets, ConfigMaps needed first
     secret.yaml
   operands/                     # Kubernetes manifests for operand instances
     my-custom-resource.yaml
     deployment.yaml
     service.yaml
+  csv-patches/                  # (optional) JSON6902 / strategic-merge CSV patches
+    00-example.json
 ```
 
 The bundle is fetched by the `deploy-operands` task using the

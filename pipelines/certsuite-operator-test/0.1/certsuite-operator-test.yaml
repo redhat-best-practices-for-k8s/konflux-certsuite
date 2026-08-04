@@ -303,6 +303,8 @@ spec:
           value: "$(tasks.get-unreleased-bundle.results.packageName)"
         - name: CHANNEL_NAME
           value: "$(tasks.get-unreleased-bundle.results.channelName)"
+        - name: TEST_BUNDLE_REF
+          value: $(params.TEST_BUNDLE_REF)
       workspaces:
         - name: shared
           workspace: shared

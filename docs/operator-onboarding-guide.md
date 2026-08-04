@@ -36,6 +36,8 @@ my-operator-test-bundle/
     service.yaml                   #   Services, etc.
   prerequisites/                   # Optional: pre-deploy resources
     pull-secret.yaml               #   Secrets, ConfigMaps, etc.
+  csv-patches/                     # Optional: CSV patches (JSON6902 / strategic-merge)
+    00-remove-min-kube-version.json
 ```
 
 ## Step 1: Create the Bundle Manifest
@@ -56,6 +58,12 @@ spec:
   description: |
     Software-only test deployment of my-operator.
 
+  # Optional: CSV patches applied after OLM creates the CSV and before
+  # waiting for Succeeded. Prefer listing paths here; if omitted, the
+  # pipeline auto-loads csv-patches/* when that directory exists.
+  # csvPatches:
+  #   - path: csv-patches/00-remove-min-kube-version.json
+
   # The pipeline verifies these resources before running certsuite.
   # Deployment, StatefulSet, DaemonSet: rollout readiness (waits for pods).
   # Any other kind: presence check (verifies the resource exists).
@@ -72,6 +80,22 @@ spec:
 
 The operator's package name and channel are **not** specified here --
 Konflux determines those from the FBC fragment in the Snapshot.
+
+### Optional CSV patches
+
+Any install-time CSV tweaks (for example HyperShift constraints such as
+removing `minKubeVersion` or a master `nodeSelector`) belong in the test
+bundle — not in the shared pipeline.
+
+Supported patch forms:
+
+| Form | Detection | Application |
+|------|-----------|-------------|
+| JSON6902 | `.json` array, or YAML list of `{op,path,...}` | Applied locally, then `oc replace` |
+| Strategic merge | YAML/JSON object | `oc patch --local --type=strategic` |
+
+See [examples/ptp-operator-test-bundle/csv-patches/](../examples/ptp-operator-test-bundle/csv-patches/)
+for the PTP HyperShift reference patches.
 
 ### Supported Check Types
 

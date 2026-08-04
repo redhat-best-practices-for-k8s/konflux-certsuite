@@ -49,7 +49,7 @@ fi
 echo "Scaffolding test bundle: ${NAME}"
 echo "  Output:  ${OUTPUT}"
 
-mkdir -p "${OUTPUT}/operands" "${OUTPUT}/prerequisites"
+mkdir -p "${OUTPUT}/operands" "${OUTPUT}/prerequisites" "${OUTPUT}/csv-patches"
 
 # ── certsuite-test-bundle.yaml ─────────────────────────────────────────
 cat > "${OUTPUT}/certsuite-test-bundle.yaml" <<EOF
@@ -66,12 +66,26 @@ spec:
     Software-only test deployment of ${NAME} operands.
     Deploys without hardware or license dependencies.
 
+  # Optional CSV patches (JSON6902 or strategic-merge). Example:
+  # csvPatches:
+  #   - path: csv-patches/00-remove-min-kube-version.json
+
   readiness:
     timeout: 300
     checks:
       - kind: Deployment
         name: ${NAME}-controller
       # Add more readiness checks as needed
+EOF
+
+cat > "${OUTPUT}/csv-patches/README.md" <<EOF
+# Optional CSV patches
+
+Place JSON6902 (\`.json\` arrays) or strategic-merge YAML patches here.
+List them under \`spec.csvPatches\` in certsuite-test-bundle.yaml, or leave
+that field empty to auto-load every file in this directory.
+
+See examples/ptp-operator-test-bundle/csv-patches/ for HyperShift examples.
 EOF
 
 # ── Example operand manifest ──────────────────────────────────────────
@@ -124,8 +138,9 @@ echo ""
 echo "Next steps:"
 echo "  1. Replace operands/example-workload.yaml with your operator's CRs"
 echo "  2. Add any prerequisite Secrets/ConfigMaps to prerequisites/"
-echo "  3. Validate: ./tools/validate-test-bundle.sh ${OUTPUT}"
-echo "  4. Test locally against a cluster before onboarding to Konflux"
+echo "  3. Add optional CSV patches under csv-patches/ if install needs tweaks"
+echo "  4. Validate: ./tools/validate-test-bundle.sh ${OUTPUT}"
+echo "  5. Test locally against a cluster before onboarding to Konflux"
 echo ""
 echo "Note: Certsuite configuration (certsuite_config.yml) is managed"
 echo "separately via the CERTSUITE_CONFIG_SECRET pipeline parameter."
