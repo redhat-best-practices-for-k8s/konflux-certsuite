@@ -738,6 +738,10 @@ spec:
               echo "[$(date -u +%FT%T.%3NZ)] Namespace: ${INSTALL_NAMESPACE}"
               echo -n "${INSTALL_NAMESPACE}" > /workspace/install-namespace
 
+              if [[ "${BUNDLE_INSTALL_MODE}" == "OwnNamespace" && -z "${OG_TARGET_NS}" ]]; then
+                OG_TARGET_NS="${INSTALL_NAMESPACE}"
+              fi
+
               # ── OperatorGroup (mode-aware) ──────────────────────────────────
               EXISTING_OG=$(oc -n "${INSTALL_NAMESPACE}" get operatorgroup -o jsonpath="{.items[*].metadata.name}" 2>/dev/null || true)
               if [[ -z "${EXISTING_OG}" ]]; then

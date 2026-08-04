@@ -62,6 +62,10 @@ fi
 echo "[$(date -u +%FT%T.%3NZ)] Using install namespace: ${INSTALL_NAMESPACE}"
 echo -n "${INSTALL_NAMESPACE}" > /workspace/install-namespace
 
+if [[ "${BUNDLE_INSTALL_MODE}" == "OwnNamespace" && -z "${OG_TARGET_NS}" ]]; then
+  OG_TARGET_NS="${INSTALL_NAMESPACE}"
+fi
+
 # Create OperatorGroup (mode-aware from resolver)
 OPERATORGROUP=$(oc -n "${INSTALL_NAMESPACE}" get operatorgroup -o jsonpath="{.items[*].metadata.name}" 2>/dev/null || true)
 
