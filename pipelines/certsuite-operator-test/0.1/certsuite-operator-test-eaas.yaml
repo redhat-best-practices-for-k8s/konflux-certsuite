@@ -257,6 +257,14 @@ spec:
                 value: $(params.PACKAGE_NAME)
               - name: CHANNEL_NAME
                 value: $(params.CHANNEL_NAME)
+              # Tekton forbids $(step.results.*) / $(results.*.path) inside script for
+              # Task steps; only env/command/args. Pass writable step-result paths here.
+              - name: RESULT_UNRELEASED_BUNDLE
+                value: $(results.unreleasedBundle.path)
+              - name: RESULT_PACKAGE_NAME
+                value: $(results.packageName.path)
+              - name: RESULT_CHANNEL_NAME
+                value: $(results.channelName.path)
             volumeMounts:
               - name: docker-config
                 mountPath: /workspace/docker-config
@@ -279,12 +287,9 @@ spec:
 
               if [[ -z "${unreleased_bundles}" ]]; then
                 echo "No unreleased bundles found. Exiting as a no-op."
-                # Use step.results.* (not results.*) so files land under
-                # /tekton/steps/step-get-bundle/results/ for task result value:
-                # "$(steps.get-bundle.results.…)" substitution.
-                echo -n "" > "$(step.results.unreleasedBundle.path)"
-                echo -n "" > "$(step.results.packageName.path)"
-                echo -n "" > "$(step.results.channelName.path)"
+                echo -n "" > "${RESULT_UNRELEASED_BUNDLE}"
+                echo -n "" > "${RESULT_PACKAGE_NAME}"
+                echo -n "" > "${RESULT_CHANNEL_NAME}"
                 exit 0
               fi
               echo "Unreleased bundles found: $unreleased_bundles"
@@ -320,16 +325,16 @@ spec:
 
               if ! highest_version_from_bundles_list=$(get_highest_version_from_bundles_list "$RENDER_OUT_FBC" "$PACKAGE_NAME" "$CHANNEL_NAME" "$unreleased_bundles"); then
                 echo "No unreleased bundle(s) found matching the specified package and/or channel. Exiting as a no-op."
-                echo -n "" > "$(step.results.unreleasedBundle.path)"
-                echo -n "" > "$(step.results.packageName.path)"
-                echo -n "" > "$(step.results.channelName.path)"
+                echo -n "" > "${RESULT_UNRELEASED_BUNDLE}"
+                echo -n "" > "${RESULT_PACKAGE_NAME}"
+                echo -n "" > "${RESULT_CHANNEL_NAME}"
                 exit 0
               fi
 
               echo "Highest bundle: $highest_version_from_bundles_list"
-              echo -n -e "$highest_version_from_bundles_list" > "$(step.results.unreleasedBundle.path)"
-              echo -n "$PACKAGE_NAME" > "$(step.results.packageName.path)"
-              echo -n "$CHANNEL_NAME" > "$(step.results.channelName.path)"
+              echo -n -e "$highest_version_from_bundles_list" > "${RESULT_UNRELEASED_BUNDLE}"
+              echo -n "$PACKAGE_NAME" > "${RESULT_PACKAGE_NAME}"
+              echo -n "$CHANNEL_NAME" > "${RESULT_CHANNEL_NAME}"
 
           # Catalog refs point at registry.redhat.io (401 for unreleased images).
           # Resolve the same digest on quay.io before any step tries opm render.
