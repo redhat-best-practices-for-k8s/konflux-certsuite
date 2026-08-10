@@ -21,6 +21,18 @@ _yq() { yq e "$1" "${BUNDLE_FILE}" 2>/dev/null || echo ""; }
 
 # ── Namespace ────────────────────────────────────────────────────────
 BUNDLE_NAMESPACE=$(_yq '.spec.namespace // ""')
+# Fallback when yq is missing/incompatible (python-yq does not support `yq e`).
+if [[ -z "${BUNDLE_NAMESPACE}" || "${BUNDLE_NAMESPACE}" == "null" ]]; then
+  BUNDLE_NAMESPACE=$(awk '
+    /^spec:/ { in_spec=1; next }
+    in_spec && /^[^ ]/ { in_spec=0 }
+    in_spec && /^[[:space:]]+namespace:[[:space:]]*/ {
+      sub(/^[[:space:]]+namespace:[[:space:]]*/, "", $0)
+      gsub(/["'\'']/, "", $0)
+      print; exit
+    }
+  ' "${BUNDLE_FILE}" 2>/dev/null || true)
+fi
 [[ -z "${BUNDLE_NAMESPACE}" || "${BUNDLE_NAMESPACE}" == "null" ]] && BUNDLE_NAMESPACE="${CSV_SUGGESTED_NS:-}"
 export BUNDLE_NAMESPACE
 

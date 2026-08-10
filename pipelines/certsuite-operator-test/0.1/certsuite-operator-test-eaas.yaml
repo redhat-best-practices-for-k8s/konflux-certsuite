@@ -1270,9 +1270,14 @@ spec:
               [[ -f /workspace/install-namespace ]] && INSTALL_NAMESPACE=$(cat /workspace/install-namespace)
 
               source /workspace/scripts/resolve-bundle-config.sh
-              TARGET_NS="${INSTALL_NAMESPACE}"
+              # Prefer TestBundle.spec.namespace (same as tasks/deploy-operands).
+              TARGET_NS="${BUNDLE_NAMESPACE:-${INSTALL_NAMESPACE}}"
 
               echo "[$(date -u +%FT%T.%3NZ)] Deploying operands to: ${TARGET_NS}"
+
+              if [[ -n "${TARGET_NS}" && "${TARGET_NS}" != "${INSTALL_NAMESPACE}" ]]; then
+                oc create namespace "${TARGET_NS}" 2>/dev/null || true
+              fi
 
               # Apply prerequisites
               if [[ -d "${BUNDLE_DIR}/prerequisites" ]]; then
