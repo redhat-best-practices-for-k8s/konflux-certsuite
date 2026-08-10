@@ -96,10 +96,12 @@ spec:
         used by get-unreleased-bundle to authenticate to registries such as
         registry.redhat.io (for example telco-5g-redhat-pull-secret).
 
-        When set to an existing Secret, that dockerconfig is preferred for
-        bundle discovery. When unset / placeholder / missing, the task falls
-        back to docker config from secrets linked on the PipelineRun
-        ServiceAccount (konflux-integration-runner), matching prior behavior.
+        When set to an existing Secret, its auths are merged on top of the
+        docker config from secrets linked on the PipelineRun ServiceAccount
+        (konflux-integration-runner). This keeps Quay pull access for private
+        FBC/bundle images while adding registry.redhat.io credentials.
+
+        When unset / placeholder / missing, only SA-linked credentials are used.
 
         Prefer this param over namespace-wide SA linking when only certsuite
         needs the registry.redhat.io credentials.
@@ -193,21 +195,40 @@ spec:
               #!/usr/bin/env bash
               set -euo pipefail
               DEST="/workspace/docker-config/config.json"
-              if [[ -s /registry-pull-creds/.dockerconfigjson ]]; then
-                cp /registry-pull-creds/.dockerconfigjson "${DEST}"
-                echo "Using REGISTRY_PULL_SECRET dockerconfig for registry auth"
-              elif [[ -s /registry-pull-creds/config.json ]]; then
-                cp /registry-pull-creds/config.json "${DEST}"
-                echo "Using REGISTRY_PULL_SECRET config.json for registry auth"
-              elif [[ -s /tekton/home/.docker/config.json ]]; then
-                cp /tekton/home/.docker/config.json "${DEST}"
-                echo "Using ServiceAccount-linked docker config for registry auth"
+
+              # Start from SA-linked docker config (includes Quay pull secrets for
+              # private redhat-user-workloads FBC/bundle images). Then merge in
+              # REGISTRY_PULL_SECRET auths (e.g. registry.redhat.io) on top.
+              # Replacing SA config entirely drops Quay auth and makes
+              # get_base_image fail with "base image annotation not found".
+              BASE='{"auths":{}}'
+              if [[ -s /tekton/home/.docker/config.json ]]; then
+                BASE=$(cat /tekton/home/.docker/config.json)
+                echo "Loaded ServiceAccount-linked docker config"
               elif [[ -s "${HOME}/.docker/config.json" ]]; then
-                cp "${HOME}/.docker/config.json" "${DEST}"
-                echo "Using HOME docker config for registry auth"
+                BASE=$(cat "${HOME}/.docker/config.json")
+                echo "Loaded HOME docker config"
               else
-                echo '{"auths":{}}' > "${DEST}"
-                echo "WARNING: no registry pull credentials found; registry.redhat.io pulls may fail"
+                echo "WARNING: no ServiceAccount docker config found"
+              fi
+
+              EXTRA=""
+              if [[ -s /registry-pull-creds/.dockerconfigjson ]]; then
+                EXTRA=$(cat /registry-pull-creds/.dockerconfigjson)
+                echo "Merging REGISTRY_PULL_SECRET dockerconfig into registry auth"
+              elif [[ -s /registry-pull-creds/config.json ]]; then
+                EXTRA=$(cat /registry-pull-creds/config.json)
+                echo "Merging REGISTRY_PULL_SECRET config.json into registry auth"
+              else
+                echo "REGISTRY_PULL_SECRET not mounted or empty; using SA auth only"
+              fi
+
+              if [[ -n "${EXTRA}" ]]; then
+                jq -n --argjson base "${BASE}" --argjson extra "${EXTRA}" \
+                  '$base * $extra | .auths = (($base.auths // {}) + ($extra.auths // {}))' \
+                  > "${DEST}"
+              else
+                printf '%s' "${BASE}" > "${DEST}"
               fi
 
           # Inlined from tekton-integration-catalog get-unreleased-bundle StepAction so

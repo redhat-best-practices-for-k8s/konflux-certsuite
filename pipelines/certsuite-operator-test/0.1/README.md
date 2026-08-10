@@ -52,8 +52,10 @@ params:
     value: "telco-5g-redhat-pull-secret"   # kubernetes.io/dockerconfigjson in the tenant
 ```
 
-When the Secret exists it is preferred for bundle discovery. When unset,
-placeholder, or missing, the task falls back to SA-linked credentials.
+When the Secret exists its registry auths are **merged** with SA-linked
+credentials (Quay component pull secrets are kept; `registry.redhat.io`
+entries are added). When unset, placeholder, or missing, only SA-linked
+credentials are used.
 
 ### OCI Results Storage
 
