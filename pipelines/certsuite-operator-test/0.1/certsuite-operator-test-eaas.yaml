@@ -279,9 +279,12 @@ spec:
 
               if [[ -z "${unreleased_bundles}" ]]; then
                 echo "No unreleased bundles found. Exiting as a no-op."
-                echo -n "" > "$(results.unreleasedBundle.path)"
-                echo -n "" > "$(results.packageName.path)"
-                echo -n "" > "$(results.channelName.path)"
+                # Use step.results.* (not results.*) so files land under
+                # /tekton/steps/step-get-bundle/results/ for task result value:
+                # "$(steps.get-bundle.results.…)" substitution.
+                echo -n "" > "$(step.results.unreleasedBundle.path)"
+                echo -n "" > "$(step.results.packageName.path)"
+                echo -n "" > "$(step.results.channelName.path)"
                 exit 0
               fi
               echo "Unreleased bundles found: $unreleased_bundles"
@@ -317,16 +320,16 @@ spec:
 
               if ! highest_version_from_bundles_list=$(get_highest_version_from_bundles_list "$RENDER_OUT_FBC" "$PACKAGE_NAME" "$CHANNEL_NAME" "$unreleased_bundles"); then
                 echo "No unreleased bundle(s) found matching the specified package and/or channel. Exiting as a no-op."
-                echo -n "" > "$(results.unreleasedBundle.path)"
-                echo -n "" > "$(results.packageName.path)"
-                echo -n "" > "$(results.channelName.path)"
+                echo -n "" > "$(step.results.unreleasedBundle.path)"
+                echo -n "" > "$(step.results.packageName.path)"
+                echo -n "" > "$(step.results.channelName.path)"
                 exit 0
               fi
 
               echo "Highest bundle: $highest_version_from_bundles_list"
-              echo -n -e "$highest_version_from_bundles_list" > "$(results.unreleasedBundle.path)"
-              echo -n "$PACKAGE_NAME" > "$(results.packageName.path)"
-              echo -n "$CHANNEL_NAME" > "$(results.channelName.path)"
+              echo -n -e "$highest_version_from_bundles_list" > "$(step.results.unreleasedBundle.path)"
+              echo -n "$PACKAGE_NAME" > "$(step.results.packageName.path)"
+              echo -n "$CHANNEL_NAME" > "$(step.results.channelName.path)"
 
           # Catalog refs point at registry.redhat.io (401 for unreleased images).
           # Resolve the same digest on quay.io before any step tries opm render.
