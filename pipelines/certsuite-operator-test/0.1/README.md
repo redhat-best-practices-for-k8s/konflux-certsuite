@@ -38,6 +38,23 @@ cluster is automatically destroyed when the PipelineRun completes.
 Released operators on `registry.redhat.io` need no mirror set (skipped when the
 FBC is not on `quay.io/redhat-user-workloads`).
 
+### Registry Pull Secret (optional)
+
+`get-unreleased-bundle` needs to pull/inspect images from registries such as
+`registry.redhat.io`. By default it uses dockerconfig secrets linked on the
+PipelineRun ServiceAccount (`konflux-integration-runner`).
+
+To avoid namespace-wide SA linking, pass a Secret name as an ITS param:
+
+```yaml
+params:
+  - name: REGISTRY_PULL_SECRET
+    value: "telco-5g-redhat-pull-secret"   # kubernetes.io/dockerconfigjson in the tenant
+```
+
+When the Secret exists it is preferred for bundle discovery. When unset,
+placeholder, or missing, the task falls back to SA-linked credentials.
+
 ### OCI Results Storage
 
 By default results are pushed to the component's Quay repo (via `OCI_PUSH_SECRET`)

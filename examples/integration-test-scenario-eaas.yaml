@@ -37,6 +37,11 @@ spec:
     # - PACKAGE_NAME / CHANNEL_NAME: auto-detected from FBC when empty
     # - OCI_PUSH_SECRET: dockerconfigjson Secret for results on the component Quay repo
     #
+    # Optional registry pull secret for get-unreleased-bundle (avoids linking
+    # registry.redhat.io credentials onto konflux-integration-runner for all ITS):
+    # - name: REGISTRY_PULL_SECRET
+    #   value: "<tenant-redhat-pull-secret>"
+    #
     # External OCI results storage (any OCI registry — Quay, docker.io, …):
     # Create the Secret first, then set both params (no credential fallback):
     #   oc create secret docker-registry certsuite-results-push-secret \
