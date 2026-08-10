@@ -164,22 +164,21 @@ spec:
           - name: registryPullSecret
             type: string
         results:
-          # get-bundle is inlined (not a StepAction ref) so DOCKER_CONFIG / volumeMounts
-          # are allowed — Tekton rejects env/volumeMounts together with step ref.
+          # Written by emit-task-results from /workspace/bundle-meta (no step results:
+          # inlined Task steps cannot use $(step.results.*) in scripts).
           - name: unreleasedBundle
-            value: "$(steps.get-bundle.results.unreleasedBundle)"
           - name: quayBundle
             description: Pullable quay.io bundle image (same digest as catalog ref)
           - name: packageName
-            value: "$(steps.get-bundle.results.packageName)"
           - name: channelName
-            value: "$(steps.get-bundle.results.channelName)"
         volumes:
           - name: registry-pull-creds
             secret:
               secretName: $(params.registryPullSecret)
               optional: true
           - name: docker-config
+            emptyDir: {}
+          - name: bundle-meta
             emptyDir: {}
         steps:
           # Prefer REGISTRY_PULL_SECRET when present; otherwise keep SA-linked auth.
@@ -233,6 +232,8 @@ spec:
 
           # Inlined from tekton-integration-catalog get-unreleased-bundle StepAction so
           # we can set DOCKER_CONFIG (forbidden on steps that use ref).
+          # Outputs go to bundle-meta volume — not step results — because Tekton
+          # forbids step-result path substitutions inside Task step scripts.
           - name: get-bundle
             image: quay.io/konflux-ci/konflux-test:v1.4.48@sha256:9b815268fb2bf10b5d745518da1c6568944f15816efe51adc192972b42a6e74d
             computeResources:
@@ -241,13 +242,6 @@ spec:
               requests:
                 memory: 8Gi
                 cpu: "1"
-            results:
-              - name: unreleasedBundle
-                type: string
-              - name: packageName
-                type: string
-              - name: channelName
-                type: string
             env:
               - name: DOCKER_CONFIG
                 value: /workspace/docker-config
@@ -257,22 +251,27 @@ spec:
                 value: $(params.PACKAGE_NAME)
               - name: CHANNEL_NAME
                 value: $(params.CHANNEL_NAME)
-              # Tekton forbids $(step.results.*) / $(results.*.path) inside script for
-              # Task steps; only env/command/args. Pass writable step-result paths here.
-              - name: RESULT_UNRELEASED_BUNDLE
-                value: $(results.unreleasedBundle.path)
-              - name: RESULT_PACKAGE_NAME
-                value: $(results.packageName.path)
-              - name: RESULT_CHANNEL_NAME
-                value: $(results.channelName.path)
+              - name: META_DIR
+                value: /workspace/bundle-meta
             volumeMounts:
               - name: docker-config
                 mountPath: /workspace/docker-config
                 readOnly: true
+              - name: bundle-meta
+                mountPath: /workspace/bundle-meta
             script: |
               #!/usr/bin/env bash
               set -euo pipefail
               . /utils.sh
+
+              write_meta() {
+                local bundle="${1:-}"
+                local pkg="${2:-}"
+                local channel="${3:-}"
+                echo -n "${bundle}" > "${META_DIR}/unreleasedBundle"
+                echo -n "${pkg}" > "${META_DIR}/packageName"
+                echo -n "${channel}" > "${META_DIR}/channelName"
+              }
 
               if [[ -z "${FBC_FRAGMENT}" ]]; then
                 echo "Error: FBC_FRAGMENT parameter is required." >&2
@@ -287,9 +286,7 @@ spec:
 
               if [[ -z "${unreleased_bundles}" ]]; then
                 echo "No unreleased bundles found. Exiting as a no-op."
-                echo -n "" > "${RESULT_UNRELEASED_BUNDLE}"
-                echo -n "" > "${RESULT_PACKAGE_NAME}"
-                echo -n "" > "${RESULT_CHANNEL_NAME}"
+                write_meta "" "" ""
                 exit 0
               fi
               echo "Unreleased bundles found: $unreleased_bundles"
@@ -325,16 +322,12 @@ spec:
 
               if ! highest_version_from_bundles_list=$(get_highest_version_from_bundles_list "$RENDER_OUT_FBC" "$PACKAGE_NAME" "$CHANNEL_NAME" "$unreleased_bundles"); then
                 echo "No unreleased bundle(s) found matching the specified package and/or channel. Exiting as a no-op."
-                echo -n "" > "${RESULT_UNRELEASED_BUNDLE}"
-                echo -n "" > "${RESULT_PACKAGE_NAME}"
-                echo -n "" > "${RESULT_CHANNEL_NAME}"
+                write_meta "" "" ""
                 exit 0
               fi
 
               echo "Highest bundle: $highest_version_from_bundles_list"
-              echo -n -e "$highest_version_from_bundles_list" > "${RESULT_UNRELEASED_BUNDLE}"
-              echo -n "$PACKAGE_NAME" > "${RESULT_PACKAGE_NAME}"
-              echo -n "$CHANNEL_NAME" > "${RESULT_CHANNEL_NAME}"
+              write_meta "$highest_version_from_bundles_list" "$PACKAGE_NAME" "$CHANNEL_NAME"
 
           # Catalog refs point at registry.redhat.io (401 for unreleased images).
           # Resolve the same digest on quay.io before any step tries opm render.
@@ -345,34 +338,36 @@ spec:
                 value: /workspace/docker-config
               - name: FBC_FRAGMENT
                 value: "$(tasks.parse-metadata.results.component-container-image)"
-              - name: BUNDLE_IMAGE
-                value: "$(steps.get-bundle.results.unreleasedBundle)"
+              - name: META_DIR
+                value: /workspace/bundle-meta
             volumeMounts:
               - name: docker-config
                 mountPath: /workspace/docker-config
                 readOnly: true
+              - name: bundle-meta
+                mountPath: /workspace/bundle-meta
             script: |
               #!/usr/bin/env bash
               set -euo pipefail
 
-              # Task-level result path (Tekton substitutes before bash runs).
-              RESULT_PATH=$(results.quayBundle.path)
+              BUNDLE_IMAGE="$(cat "${META_DIR}/unreleasedBundle")"
+              QUAY_OUT="${META_DIR}/quayBundle"
 
               if [[ -z "${BUNDLE_IMAGE}" ]]; then
-                echo -n "" > "${RESULT_PATH}"
+                echo -n "" > "${QUAY_OUT}"
                 exit 0
               fi
 
               # Already a quay ref — pass through
               if [[ "${BUNDLE_IMAGE}" == quay.io/* ]]; then
                 echo "Bundle already on quay: ${BUNDLE_IMAGE}"
-                echo -n "${BUNDLE_IMAGE}" > "${RESULT_PATH}"
+                echo -n "${BUNDLE_IMAGE}" > "${QUAY_OUT}"
                 exit 0
               fi
 
               if [[ "${FBC_FRAGMENT}" != quay.io/redhat-user-workloads/* ]]; then
                 echo "FBC not on redhat-user-workloads; keeping catalog ref"
-                echo -n "${BUNDLE_IMAGE}" > "${RESULT_PATH}"
+                echo -n "${BUNDLE_IMAGE}" > "${QUAY_OUT}"
                 exit 0
               fi
 
@@ -396,7 +391,32 @@ spec:
               fi
 
               echo "Resolved quay bundle: ${QUAY_BUNDLE}"
-              echo -n "${QUAY_BUNDLE}" > "${RESULT_PATH}"
+              echo -n "${QUAY_BUNDLE}" > "${QUAY_OUT}"
+
+          - name: emit-task-results
+            image: quay.io/konflux-ci/konflux-test:v1.4.31@sha256:a7cae9e96663e277a3904d0c78630508ddb6cc8eebaa912a840bd20f68dcaad1
+            env:
+              - name: META_DIR
+                value: /workspace/bundle-meta
+              - name: RESULT_UNRELEASED_BUNDLE
+                value: $(results.unreleasedBundle.path)
+              - name: RESULT_QUAY_BUNDLE
+                value: $(results.quayBundle.path)
+              - name: RESULT_PACKAGE_NAME
+                value: $(results.packageName.path)
+              - name: RESULT_CHANNEL_NAME
+                value: $(results.channelName.path)
+            volumeMounts:
+              - name: bundle-meta
+                mountPath: /workspace/bundle-meta
+                readOnly: true
+            script: |
+              #!/usr/bin/env bash
+              set -euo pipefail
+              echo -n "$(cat "${META_DIR}/unreleasedBundle")" > "${RESULT_UNRELEASED_BUNDLE}"
+              echo -n "$(cat "${META_DIR}/quayBundle")" > "${RESULT_QUAY_BUNDLE}"
+              echo -n "$(cat "${META_DIR}/packageName")" > "${RESULT_PACKAGE_NAME}"
+              echo -n "$(cat "${META_DIR}/channelName")" > "${RESULT_CHANNEL_NAME}"
 
     # ── 4. Pick Cluster Params ─────────────────────────────────────────
     - name: pick-cluster-params
