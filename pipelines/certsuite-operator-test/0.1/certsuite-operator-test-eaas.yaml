@@ -778,6 +778,14 @@ spec:
                     oc rollout status daemonset/"${DS}" -n "${INSTALL_NAMESPACE}" --timeout=120s 2>&1 || true
                   done
 
+                  DEP_NAMES=$(oc get deployments -n "${INSTALL_NAMESPACE}" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
+                  for DEP in ${DEP_NAMES}; do
+                    echo "[$(date -u +%FT%T.%3NZ)] Patching Deployment ${DEP} with certsuite labels..."
+                    oc patch deployment "${DEP}" -n "${INSTALL_NAMESPACE}" --type=merge \
+                      -p '{"spec":{"template":{"metadata":{"labels":{"redhat-best-practices-for-k8s.com/generic":"target"}}}}}' 2>&1
+                    oc rollout status deployment/"${DEP}" -n "${INSTALL_NAMESPACE}" --timeout=120s 2>&1 || true
+                  done
+
                   exit 0
                 elif [[ "${PHASE}" == "Failed" ]]; then
                   echo "ERROR: CSV failed" >&2
