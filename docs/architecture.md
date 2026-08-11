@@ -147,7 +147,7 @@ to find the operator's workloads (namespaces, labels, CRD filters).
 ```
 my-operator-test-bundle/
   certsuite-test-bundle.yaml    # Bundle metadata (namespace, readiness, csvPatches, etc.)
-  certsuite_config.yml          # Certsuite runtime config (namespaces, labels, CRD filters)
+  certsuite_config.yml          # Required: certsuite runtime config (namespaces, labels, CRD filters)
   prerequisites/                # (optional) Secrets, ConfigMaps needed first
     secret.yaml
   operands/                     # Kubernetes manifests for operand instances
@@ -248,9 +248,11 @@ For each `(operator, release)` pair:
    repository.
 2. Validate it locally with `tools/validate-test-bundle.sh`.
 3. Create an `IntegrationTestScenario` in your Konflux tenant config.
-   See [examples/integration-test-scenario.yaml](../examples/integration-test-scenario.yaml).
+   See [examples/integration-test-scenario-eaas.yaml](../examples/integration-test-scenario-eaas.yaml).
 4. Ensure the required Secrets exist in your tenant namespace:
    - **EaaS (recommended):**
+     - `REGISTRY_PULL_SECRET` -- `dockerconfigjson` Secret for
+       `registry.redhat.io` (required for unreleased operators)
      - (optional) component ImageRepository push secret via `OCI_PUSH_SECRET`
      - (optional) external results secret via `OCI_RESULTS_SECRET` when
        using `OCI_RESULTS_REPO` (must be `kubernetes.io/dockerconfigjson`

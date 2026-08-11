@@ -2,8 +2,10 @@
 # This is the recommended approach -- no kubeconfig secrets, OADP, or
 # cluster locks needed. Each run provisions a fresh Hypershift cluster.
 #
-# Copy this file into your Konflux tenants-config repository and update
-# the values marked with <REPLACE>.
+# How to create this:
+#   1. Konflux UI: Application → Integration tests → Add
+#   2. CLI: oc apply -f <this-file> -n <tenant-namespace>
+#   3. GitOps: add to your tenants-config repository
 #
 # For unreleased operators, keep .tekton/images-mirror-set.yaml in the same
 # monorepo as TEST_BUNDLE_REF (Konflux/Conforma convention). The pipeline
@@ -12,11 +14,14 @@ apiVersion: appstudio.redhat.com/v1beta2
 kind: IntegrationTestScenario
 metadata:
   labels:
+    # "false" = mandatory (blocks merge if test fails); "true" = optional (informational only)
     test.appstudio.openshift.io/optional: "false"
   name: certsuite-operator-test
   namespace: <REPLACE:tenant-namespace>
 spec:
   application: <REPLACE:application-name>
+  # Only triggers for snapshots containing the named component.
+  # Use your FBC component name from the Konflux application.
   contexts:
     - description: Certsuite testing for the FBC component
       name: component_<REPLACE:component-name>
@@ -32,15 +37,14 @@ spec:
     # - name: IMAGES_MIRROR_SET_REF
     #   value: "https://github.com/<REPLACE:org>/<REPLACE:repo>.git@<REPLACE:branch>#.tekton/images-mirror-set.yaml"
     #
-    # Optional:
-    # - CERTSUITE_LABELS: default "common"
-    # - PACKAGE_NAME / CHANNEL_NAME: auto-detected from FBC when empty
-    # - OCI_PUSH_SECRET: dockerconfigjson Secret for results on the component Quay repo
+    # Results storage — push to the component's Quay repo:
+    - name: OCI_PUSH_SECRET
+      value: "<REPLACE:component-push-secret>"
     #
-    # Optional registry pull secret for get-unreleased-bundle (avoids linking
-    # registry.redhat.io credentials onto konflux-integration-runner for all ITS):
-    # - name: REGISTRY_PULL_SECRET
-    #   value: "<tenant-redhat-pull-secret>"
+    # Optional:
+    # - CERTSUITE_LABELS: default "common" (see docs for available labels)
+    # - PACKAGE_NAME / CHANNEL_NAME: auto-detected from FBC when empty
+    # - REGISTRY_PULL_SECRET: only if SA-linked creds don't cover registry.redhat.io
     #
     # External OCI results storage (any OCI registry — Quay, docker.io, …):
     # Create the Secret first, then set both params (no credential fallback):
@@ -60,6 +64,7 @@ spec:
     params:
       - name: url
         value: https://github.com/redhat-best-practices-for-k8s/konflux-certsuite.git
+      # Use 'main' for latest, or pin to a release tag (e.g. v0.1.0) for stability.
       - name: revision
         value: main
       - name: pathInRepo

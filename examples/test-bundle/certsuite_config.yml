@@ -5,7 +5,7 @@
 #
 # See: https://redhat-best-practices-for-k8s.github.io/certsuite/configuration/
 targetNameSpaces:
-  - name: ""  # Set to the operator's install namespace
+  - name: "<REPLACE:operator-namespace>"
 
 podsUnderTestLabels:
   - "redhat-best-practices-for-k8s.com/generic: target"

@@ -38,6 +38,21 @@ cluster is automatically destroyed when the PipelineRun completes.
 Released operators on `registry.redhat.io` need no mirror set (skipped when the
 FBC is not on `quay.io/redhat-user-workloads`).
 
+### All EaaS Parameters
+
+| Parameter | Required | Default | Description |
+|-----------|----------|---------|-------------|
+| `TEST_BUNDLE_REF` | Yes | — | Git ref to the test bundle (`url@branch#path`) |
+| `IMAGES_MIRROR_SET_REF` | No | auto-discovered from `TEST_BUNDLE_REF` repo at `.tekton/images-mirror-set.yaml` | Git ref to the ImageDigestMirrorSet for unreleased image mirroring. Set explicitly only if the file is in a different repo or non-standard path. |
+| `OCI_PUSH_SECRET` | No | — | `dockerconfigjson` Secret for pushing results to the component Quay repo |
+| `OCI_RESULTS_REPO` | No | — | Bare OCI repo for external results storage (alternative to component repo) |
+| `OCI_RESULTS_SECRET` | No | — | Push secret for `OCI_RESULTS_REPO` |
+| `CERTSUITE_LABELS` | No | `common` | Comma-separated test labels or logical expression |
+| `REGISTRY_PULL_SECRET` | No | SA-linked credentials | `dockerconfigjson` Secret for `registry.redhat.io`. Only needed if the SA doesn't already have credentials linked. |
+| `PACKAGE_NAME` | No | auto-detected from FBC | Operator package name override |
+| `CHANNEL_NAME` | No | auto-detected from FBC | OLM channel override |
+| `PIPELINE_SCRIPTS_REF` | No | same repo/branch as pipeline | Git ref to pipeline scripts (advanced — used for testing pipeline changes from forks) |
+
 ### Registry Pull Secret (optional)
 
 `get-unreleased-bundle` needs to pull/inspect images from registries such as
