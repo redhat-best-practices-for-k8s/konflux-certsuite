@@ -103,6 +103,14 @@ spec:
 
         Prefer this param over namespace-wide SA linking when only certsuite
         needs the registry.redhat.io credentials.
+    - name: RELEASE
+      type: string
+      default: ""
+      description: |
+        Optional release/stream label included in external OCI result tags
+        (e.g. "5.0"). When set with OCI_RESULTS_REPO, tags become
+        certsuite-results-<package>-<release>-<timestamp>. When empty, the
+        release segment is omitted.
 
   tasks:
     # ── 1. Parse Snapshot Metadata ──────────────────────────────────────
@@ -592,6 +600,8 @@ spec:
           value: $(params.OCI_RESULTS_SECRET)
         - name: pipelineScriptsRef
           value: $(params.PIPELINE_SCRIPTS_REF)
+        - name: release
+          value: $(params.RELEASE)
       taskSpec:
         params:
           - name: eaasSpaceSecretRef
@@ -618,6 +628,9 @@ spec:
             type: string
           - name: pipelineScriptsRef
             type: string
+          - name: release
+            type: string
+            default: ""
         volumes:
           - name: credentials
             emptyDir: {}
@@ -1214,6 +1227,8 @@ spec:
                 value: "$(params.packageName)"
               - name: OCI_RESULTS_REPO
                 value: "$(params.ociResultsRepo)"
+              - name: RELEASE
+                value: "$(params.release)"
             script: |
               #!/bin/sh
               set -eu
@@ -1271,10 +1286,15 @@ spec:
 
               # ── Build tag ──────────────────────────────────────────────
               # External repos are shared across operators, so include the
-              # package name in the tag to avoid collisions. Component repo
-              # tags keep the original format for backward compatibility.
+              # package name in the tag to avoid collisions. Optional RELEASE
+              # adds a stream segment (e.g. 5.0). Component repo tags keep
+              # the original format for backward compatibility.
               if [ "${USE_EXTERNAL}" = "true" ] && [ -n "${PACKAGE_NAME}" ]; then
-                OCI_TAG="certsuite-results-${PACKAGE_NAME}-$(date -u +%Y%m%d-%H%M%S)"
+                if [ -n "${RELEASE}" ]; then
+                  OCI_TAG="certsuite-results-${PACKAGE_NAME}-${RELEASE}-$(date -u +%Y%m%d-%H%M%S)"
+                else
+                  OCI_TAG="certsuite-results-${PACKAGE_NAME}-$(date -u +%Y%m%d-%H%M%S)"
+                fi
               else
                 OCI_TAG="certsuite-results-$(date -u +%Y%m%d-%H%M%S)"
               fi
@@ -1309,5 +1329,5 @@ spec:
     #   a) the same Quay repo as the FBC/component image (OCI_PUSH_SECRET),
     #      tagged certsuite-results-<timestamp>, or
     #   b) an external repo (OCI_RESULTS_REPO + OCI_RESULTS_SECRET),
-    #      tagged certsuite-results-<package>-<timestamp>.
+    #      tagged certsuite-results-<package>[-<release>]-<timestamp>.
     # Download with: oras pull <OCI_REF printed in push-results logs>
