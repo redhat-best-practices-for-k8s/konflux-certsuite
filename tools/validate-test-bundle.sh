@@ -3,9 +3,9 @@ set -euo pipefail
 
 # Validates a certsuite test bundle directory for correctness.
 #
-# The test bundle is responsible for deploying operator operands and
-# verifying the operator is properly deployed. It does NOT contain
-# certsuite configuration (that is managed separately).
+# The test bundle is responsible for deploying operator operands,
+# verifying the operator is properly deployed, and providing
+# certsuite runtime configuration (certsuite_config.yml).
 #
 # Usage:
 #   ./validate-test-bundle.sh /path/to/certsuite-test-bundle
@@ -52,6 +52,17 @@ if [[ -d "${BUNDLE_DIR}/operands" ]]; then
   fi
 else
   fail "operands/ directory not found"
+fi
+
+if [[ -f "${BUNDLE_DIR}/certsuite_config.yml" ]]; then
+  pass "certsuite_config.yml exists"
+  if grep -q "targetNameSpaces" "${BUNDLE_DIR}/certsuite_config.yml"; then
+    pass "certsuite_config.yml has targetNameSpaces"
+  else
+    warn "certsuite_config.yml missing targetNameSpaces (certsuite may not find workloads)"
+  fi
+else
+  fail "certsuite_config.yml not found (required for certsuite runtime)"
 fi
 
 # ── Bundle manifest checks ────────────────────────────────────────────

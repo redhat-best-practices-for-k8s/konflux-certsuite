@@ -141,12 +141,13 @@ install/operand namespaces. OADP restore then handles any remaining drift.
 The test bundle is a directory (hosted in a git repo or OCI image) that
 operator owners create. It tells the pipeline how to deploy operands in
 a software-only mode and verify the operator is properly deployed. The
-bundle is **not** responsible for certsuite configuration -- that is
-managed separately via the `CERTSUITE_CONFIG_SECRET` pipeline parameter.
+bundle also includes `certsuite_config.yml`, which tells certsuite where
+to find the operator's workloads (namespaces, labels, CRD filters).
 
 ```
 my-operator-test-bundle/
   certsuite-test-bundle.yaml    # Bundle metadata (namespace, readiness, csvPatches, etc.)
+  certsuite_config.yml          # Certsuite runtime config (namespaces, labels, CRD filters)
   prerequisites/                # (optional) Secrets, ConfigMaps needed first
     secret.yaml
   operands/                     # Kubernetes manifests for operand instances

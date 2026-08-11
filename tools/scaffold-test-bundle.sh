@@ -14,9 +14,8 @@ Usage: $(basename "$0") [OPTIONS]
 Generate a certsuite test bundle scaffold.
 
 The test bundle describes how to deploy your operator's operands in a
-software-only mode for certsuite testing. It does NOT include certsuite
-configuration -- that is managed separately via the pipeline's
-CERTSUITE_CONFIG_SECRET parameter.
+software-only mode for certsuite testing, and includes the certsuite
+runtime configuration (certsuite_config.yml).
 
 Options:
   --name NAME          Bundle name (required)
@@ -102,6 +101,27 @@ spec:
       # Add more readiness checks as needed
 EOF
 
+# ── certsuite_config.yml ───────────────────────────────────────────────
+CERTSUITE_NS="${NAMESPACE:-"<REPLACE:operator-namespace>"}"
+cat > "${OUTPUT}/certsuite_config.yml" <<EOF
+# Certsuite runtime configuration.
+# This file is REQUIRED in the test bundle.
+# See: https://redhat-best-practices-for-k8s.github.io/certsuite/configuration/
+targetNameSpaces:
+  - name: "${CERTSUITE_NS}"
+
+podsUnderTestLabels:
+  - "redhat-best-practices-for-k8s.com/generic: target"
+
+operatorsUnderTestLabels:
+  - "redhat-best-practices-for-k8s.com/operator: target"
+
+# CRD filters -- update with your operator's CRD suffixes
+# targetCrdFilters:
+#   - nameSuffix: "${NAME}.example.com"
+#     scalable: false
+EOF
+
 cat > "${OUTPUT}/csv-patches/README.md" <<EOF
 # Optional CSV patches
 
@@ -161,10 +181,8 @@ echo "Test bundle scaffolded at: ${OUTPUT}"
 echo ""
 echo "Next steps:"
 echo "  1. Replace operands/example-workload.yaml with your operator's CRs"
-echo "  2. Add any prerequisite Secrets/ConfigMaps to prerequisites/"
-echo "  3. Add optional CSV patches under csv-patches/ if install needs tweaks"
-echo "  4. Validate: ./tools/validate-test-bundle.sh ${OUTPUT}"
-echo "  5. Test locally against a cluster before onboarding to Konflux"
-echo ""
-echo "Note: Certsuite configuration (certsuite_config.yml) is managed"
-echo "separately via the CERTSUITE_CONFIG_SECRET pipeline parameter."
+echo "  2. Update certsuite_config.yml with your namespace and CRD filters"
+echo "  3. Add any prerequisite Secrets/ConfigMaps to prerequisites/"
+echo "  4. Add optional CSV patches under csv-patches/ if install needs tweaks"
+echo "  5. Validate: ./tools/validate-test-bundle.sh ${OUTPUT}"
+echo "  6. Test locally against a cluster before onboarding to Konflux"

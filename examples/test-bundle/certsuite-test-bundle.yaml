@@ -5,8 +5,8 @@
 # needed to exercise the operator without requiring specialized hardware,
 # license keys, or external services.
 #
-# The test bundle is NOT responsible for certsuite configuration -- that
-# is handled separately via the CERTSUITE_CONFIG_SECRET pipeline parameter.
+# The test bundle also includes certsuite_config.yml which tells certsuite
+# where to find the operator's workloads (namespaces, labels, CRD filters).
 apiVersion: certsuite.redhat.com/v1alpha1
 kind: TestBundle
 metadata:
