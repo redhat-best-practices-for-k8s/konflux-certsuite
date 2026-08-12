@@ -1,9 +1,7 @@
-# Certsuite configuration for the example operator.
+# Certsuite runtime configuration for the example operator.
 #
-# NOTE: This file is provided as a reference. In production, certsuite
-# configuration should be stored as a Kubernetes Secret and referenced
-# via the CERTSUITE_CONFIG_SECRET pipeline parameter -- NOT bundled
-# inside the test bundle.
+# This file is REQUIRED in the test bundle. It tells certsuite where to
+# find the operator's workloads (namespaces, pod labels, CRD filters).
 #
 # See: https://redhat-best-practices-for-k8s.github.io/certsuite/configuration/
 targetNameSpaces:

@@ -20,9 +20,9 @@ your operator's operands on any OpenShift cluster so the pipeline can
 verify the operator is properly deployed and then run certsuite against
 it.
 
-The test bundle is **not** responsible for certsuite configuration --
-that is managed separately via the `CERTSUITE_CONFIG_SECRET` pipeline
-parameter. By default, the pipeline runs **all** certsuite tests
+The test bundle also includes `certsuite_config.yml`, which tells
+certsuite where to find the operator's workloads (namespaces, labels,
+CRD filters). By default, the pipeline runs **all** certsuite tests
 unless a subset is specified via `CERTSUITE_LABELS`.
 
 ## Bundle Directory Structure
@@ -30,6 +30,7 @@ unless a subset is specified via `CERTSUITE_LABELS`.
 ```
 my-operator-test-bundle/
   certsuite-test-bundle.yaml       # Required: bundle metadata
+  certsuite_config.yml             # Required: certsuite runtime config
   operands/                        # Required: operand manifests
     my-custom-resource.yaml        #   Your operator's CR instances
     deployment.yaml                #   Any additional workloads
@@ -225,7 +226,39 @@ or other elevated permissions. Certsuite will flag these, but they can be
 addressed with exceptions in cert-track-results. Do not change your
 operator's actual requirements just to pass validation.
 
-## Step 3: Add Prerequisites (Optional)
+## Step 3: Create `certsuite_config.yml`
+
+This file is **required** in the test bundle. It tells certsuite where to
+find your operator's workloads at runtime:
+
+```yaml
+# certsuite_config.yml
+targetNameSpaces:
+  - name: my-operator-ns        # Must match spec.namespace in the bundle manifest
+
+podsUnderTestLabels:
+  - "redhat-best-practices-for-k8s.com/generic: target"
+
+operatorsUnderTestLabels:
+  - "redhat-best-practices-for-k8s.com/operator: target"
+
+# CRD filters -- list your operator's CRD suffixes
+targetCrdFilters:
+  - nameSuffix: "myoperator.example.com"
+    scalable: false
+```
+
+| Field | Description |
+|-------|-------------|
+| `targetNameSpaces` | Namespaces where certsuite looks for workloads. Must match the install namespace. |
+| `podsUnderTestLabels` | Labels identifying pods to test. Must match `discoveryLabels.pod` in the bundle manifest. |
+| `operatorsUnderTestLabels` | Labels identifying the operator CSV. Must match `discoveryLabels.operator`. |
+| `targetCrdFilters` | CRD name suffixes owned by your operator (for CRD-related tests). |
+
+See the [certsuite configuration reference](https://redhat-best-practices-for-k8s.github.io/certsuite/configuration/)
+for all available fields.
+
+## Step 4: Add Prerequisites (Optional)
 
 If your operands need Secrets, ConfigMaps, or RBAC resources before
 they can start, place them in a `prerequisites/` directory:
@@ -243,7 +276,7 @@ data:
 
 These are applied before the operand manifests.
 
-## Step 4: Validate Locally
+## Step 5: Validate Locally
 
 Use the provided validation tool to check your bundle before pushing:
 
@@ -254,6 +287,7 @@ Use the provided validation tool to check your bundle before pushing:
 
 The tool checks:
 - `certsuite-test-bundle.yaml` exists and has required fields
+- `certsuite_config.yml` exists
 - `operands/` directory exists and contains at least one manifest
 - YAML syntax is valid
 
@@ -274,7 +308,7 @@ oc rollout status deployment/my-workload
 oc get <your-cr-kind> -n <namespace>
 ```
 
-## Step 5: Scaffold with the CLI Tool
+## Step 6: Scaffold with the CLI Tool
 
 To generate a boilerplate test bundle:
 
@@ -287,7 +321,7 @@ To generate a boilerplate test bundle:
 This creates a complete bundle directory with placeholder manifests
 that you can customize.
 
-## Step 6: Onboard to Konflux
+## Step 7: Onboard to Konflux
 
 ### Option A: EaaS (Recommended)
 
