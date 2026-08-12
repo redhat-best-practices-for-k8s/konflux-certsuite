@@ -84,8 +84,23 @@ spec:
         }
 
         _download() {
-          local tmp; tmp=$(mktemp -d)
-          curl -sL "${GIT_URL}/archive/${GIT_REF}.tar.gz" | tar xz -C "${tmp}" --strip-components=1
+          # Fail on HTTP errors (-f). Without -f, a 404 body ("Not Found") is
+          # piped to tar and surfaces as: gzip: stdin: not in gzip format.
+          local tmp archive
+          tmp=$(mktemp -d)
+          archive="${tmp}/repo.tar.gz"
+          if ! curl --retry 3 --retry-delay 2 -fsSL \
+            "${GIT_URL}/archive/${GIT_REF}.tar.gz" -o "${archive}"; then
+            echo "ERROR: failed to download ${GIT_URL}/archive/${GIT_REF}.tar.gz" >&2
+            rm -rf "${tmp}"
+            exit 1
+          fi
+          if ! tar xz -C "${tmp}" --strip-components=1 -f "${archive}"; then
+            echo "ERROR: invalid git archive from ${GIT_URL}@${GIT_REF}" >&2
+            rm -rf "${tmp}"
+            exit 1
+          fi
+          rm -f "${archive}"
           echo "${tmp}"
         }
 
