@@ -333,8 +333,6 @@ OCI results push is optional and needs a registry Secret only if you enable it.
        value: "quay.io/<org>/certsuite-results"   # bare repo, no tag/digest
      - name: OCI_RESULTS_SECRET
        value: "certsuite-results-push-secret"
-     - name: RELEASE
-       value: "5.0"   # optional; produces certsuite-results-<package>-5.0-<timestamp>
    ```
 
    See [OCI Results Storage](../pipelines/certsuite-operator-test/0.1/README.md#oci-results-storage)
