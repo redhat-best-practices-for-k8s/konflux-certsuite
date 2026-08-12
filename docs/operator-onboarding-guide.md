@@ -368,7 +368,7 @@ OCI results push is optional and needs a registry Secret only if you enable it.
      - name: OCI_RESULTS_SECRET
        value: "certsuite-results-push-secret"
      - name: RELEASE
-       value: "5.0"   # optional; produces …-5.0-pr-… / …-5.0-merged-…
+       value: "5.0"   # optional; tag + OCI annotations (PR artifacts expire in 7d)
    ```
 
    See [OCI Results Storage](../pipelines/certsuite-operator-test/0.1/README.md#oci-results-storage)
