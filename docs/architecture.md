@@ -214,7 +214,7 @@ Results are pushed as OCI artifacts (via `oras`) with artifact type
 | Mode | Parameters | Tag format | Description |
 |------|-----------|------------|-------------|
 | **Component repo** (default) | `OCI_PUSH_SECRET` | `certsuite-results-<timestamp>` | Results are tagged on the same Quay repo as the FBC/component image. |
-| **External repo** | `OCI_RESULTS_REPO` + `OCI_RESULTS_SECRET` (+ optional `RELEASE`) | `certsuite-results-<package>[-<release>]-<timestamp>` | Results are pushed to a dedicated OCI registry (Quay, docker.io, or any OCI-compliant host). Credentials are isolated — the component push secret is never sent to the external registry. When `RELEASE` is set (e.g. `5.0`), it is inserted between package and timestamp. |
+| **External repo** | `OCI_RESULTS_REPO` + `OCI_RESULTS_SECRET` (+ optional `RELEASE`) | `certsuite-results-<package>[-<release>]-<pr\|merged>-<timestamp>` | Results are pushed to a dedicated OCI registry. `pr` vs `merged` comes from the PipelineRun event-type (`pull_request` → `pr`, `push` → `merged`). Optional `RELEASE` (e.g. `5.0`) is inserted before that segment. |
 
 `OCI_RESULTS_REPO` must be a bare repository reference (no `:tag` or
 `@digest`). Host:port forms such as `registry.example.com:5000/repo` are
