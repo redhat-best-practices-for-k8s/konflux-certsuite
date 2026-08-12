@@ -483,7 +483,15 @@ spec:
                   ;;
                 *)
                   CLONE_DIR=`mktemp -d`
-                  curl -fsSL "${GIT_URL}/archive/${GIT_REF}.tar.gz" | tar xz -C "${CLONE_DIR}" --strip-components=1
+                  ARCHIVE="${CLONE_DIR}/repo.tar.gz"
+                  if ! curl --retry 3 --retry-delay 2 -fsSL \
+                    "${GIT_URL}/archive/${GIT_REF}.tar.gz" -o "${ARCHIVE}"; then
+                    echo "ERROR: failed to download ${GIT_URL}/archive/${GIT_REF}.tar.gz" >&2
+                    rm -rf "${CLONE_DIR}"
+                    exit 1
+                  fi
+                  tar xz -C "${CLONE_DIR}" --strip-components=1 -f "${ARCHIVE}"
+                  rm -f "${ARCHIVE}"
                   if [[ ! -f "${CLONE_DIR}/${FILE_PATH}" ]]; then
                     echo "ERROR: ${FILE_PATH} not found in ${GIT_URL}@${GIT_REF}" >&2
                     exit 1
@@ -697,8 +705,23 @@ spec:
               }
 
               _download() {
-                local tmp; tmp=$(mktemp -d)
-                curl -sL "${GIT_URL}/archive/${GIT_REF}.tar.gz" | tar xz -C "${tmp}" --strip-components=1
+                # Fail on HTTP errors (-f). Without -f, a 404 body ("Not Found") is
+                # piped to tar and surfaces as: gzip: stdin: not in gzip format.
+                local tmp archive
+                tmp=$(mktemp -d)
+                archive="${tmp}/repo.tar.gz"
+                if ! curl --retry 3 --retry-delay 2 -fsSL \
+                  "${GIT_URL}/archive/${GIT_REF}.tar.gz" -o "${archive}"; then
+                  echo "ERROR: failed to download ${GIT_URL}/archive/${GIT_REF}.tar.gz" >&2
+                  rm -rf "${tmp}"
+                  exit 1
+                fi
+                if ! tar xz -C "${tmp}" --strip-components=1 -f "${archive}"; then
+                  echo "ERROR: invalid git archive from ${GIT_URL}@${GIT_REF}" >&2
+                  rm -rf "${tmp}"
+                  exit 1
+                fi
+                rm -f "${archive}"
                 echo "${tmp}"
               }
 
@@ -950,7 +973,15 @@ spec:
 
                 echo "[$(date -u +%FT%T.%3NZ)] Fetching test bundle for CSV patches: ${GIT_URL}@${GIT_REF} (${BUNDLE_PATH})"
                 CLONE_DIR=$(mktemp -d)
-                curl -sL "${GIT_URL}/archive/${GIT_REF}.tar.gz" | tar xz -C "${CLONE_DIR}" --strip-components=1
+                ARCHIVE="${CLONE_DIR}/repo.tar.gz"
+                if ! curl --retry 3 --retry-delay 2 -fsSL \
+                  "${GIT_URL}/archive/${GIT_REF}.tar.gz" -o "${ARCHIVE}"; then
+                  echo "ERROR: failed to download ${GIT_URL}/archive/${GIT_REF}.tar.gz" >&2
+                  rm -rf "${CLONE_DIR}"
+                  exit 1
+                fi
+                tar xz -C "${CLONE_DIR}" --strip-components=1 -f "${ARCHIVE}"
+                rm -f "${ARCHIVE}"
                 cp -r "${CLONE_DIR}/${BUNDLE_PATH}/." "${BUNDLE_DIR}/"
                 rm -rf "${CLONE_DIR}"
               fi
