@@ -96,10 +96,12 @@ spec:
         used by get-unreleased-bundle to authenticate to registries such as
         registry.redhat.io (for example telco-5g-redhat-pull-secret).
 
-        When set to an existing Secret, that dockerconfig is preferred for
-        bundle discovery. When unset / placeholder / missing, the task falls
-        back to docker config from secrets linked on the PipelineRun
-        ServiceAccount (konflux-integration-runner), matching prior behavior.
+        When set to an existing Secret, its auths are merged on top of the
+        docker config from secrets linked on the PipelineRun ServiceAccount
+        (konflux-integration-runner). This keeps Quay pull access for private
+        FBC/bundle images while adding registry.redhat.io credentials.
+
+        When unset / placeholder / missing, only SA-linked credentials are used.
 
         Prefer this param over namespace-wide SA linking when only certsuite
         needs the registry.redhat.io credentials.
@@ -162,21 +164,21 @@ spec:
           - name: registryPullSecret
             type: string
         results:
+          # Written by emit-task-results from /workspace/bundle-meta (no step results:
+          # inlined Task steps cannot use $(step.results.*) in scripts).
           - name: unreleasedBundle
-            value: "$(steps.get-bundle.results.unreleasedBundle)"
-          # Written directly by resolve-quay-bundle (task-level result, not step result)
           - name: quayBundle
             description: Pullable quay.io bundle image (same digest as catalog ref)
           - name: packageName
-            value: "$(steps.get-bundle.results.packageName)"
           - name: channelName
-            value: "$(steps.get-bundle.results.channelName)"
         volumes:
           - name: registry-pull-creds
             secret:
               secretName: $(params.registryPullSecret)
               optional: true
           - name: docker-config
+            emptyDir: {}
+          - name: bundle-meta
             emptyDir: {}
         steps:
           # Prefer REGISTRY_PULL_SECRET when present; otherwise keep SA-linked auth.
@@ -192,24 +194,48 @@ spec:
               #!/usr/bin/env bash
               set -euo pipefail
               DEST="/workspace/docker-config/config.json"
-              if [[ -s /registry-pull-creds/.dockerconfigjson ]]; then
-                cp /registry-pull-creds/.dockerconfigjson "${DEST}"
-                echo "Using REGISTRY_PULL_SECRET dockerconfig for registry auth"
-              elif [[ -s /registry-pull-creds/config.json ]]; then
-                cp /registry-pull-creds/config.json "${DEST}"
-                echo "Using REGISTRY_PULL_SECRET config.json for registry auth"
-              elif [[ -s /tekton/home/.docker/config.json ]]; then
-                cp /tekton/home/.docker/config.json "${DEST}"
-                echo "Using ServiceAccount-linked docker config for registry auth"
+
+              # Start from SA-linked docker config (includes Quay pull secrets for
+              # private redhat-user-workloads FBC/bundle images). Then merge in
+              # REGISTRY_PULL_SECRET auths (e.g. registry.redhat.io) on top.
+              # Replacing SA config entirely drops Quay auth and makes
+              # get_base_image fail with "base image annotation not found".
+              BASE='{"auths":{}}'
+              if [[ -s /tekton/home/.docker/config.json ]]; then
+                BASE=$(cat /tekton/home/.docker/config.json)
+                echo "Loaded ServiceAccount-linked docker config"
               elif [[ -s "${HOME}/.docker/config.json" ]]; then
-                cp "${HOME}/.docker/config.json" "${DEST}"
-                echo "Using HOME docker config for registry auth"
+                BASE=$(cat "${HOME}/.docker/config.json")
+                echo "Loaded HOME docker config"
               else
-                echo '{"auths":{}}' > "${DEST}"
-                echo "WARNING: no registry pull credentials found; registry.redhat.io pulls may fail"
+                echo "WARNING: no ServiceAccount docker config found"
               fi
 
+              EXTRA=""
+              if [[ -s /registry-pull-creds/.dockerconfigjson ]]; then
+                EXTRA=$(cat /registry-pull-creds/.dockerconfigjson)
+                echo "Merging REGISTRY_PULL_SECRET dockerconfig into registry auth"
+              elif [[ -s /registry-pull-creds/config.json ]]; then
+                EXTRA=$(cat /registry-pull-creds/config.json)
+                echo "Merging REGISTRY_PULL_SECRET config.json into registry auth"
+              else
+                echo "REGISTRY_PULL_SECRET not mounted or empty; using SA auth only"
+              fi
+
+              if [[ -n "${EXTRA}" ]]; then
+                jq -n --argjson base "${BASE}" --argjson extra "${EXTRA}" \
+                  '$base * $extra | .auths = (($base.auths // {}) + ($extra.auths // {}))' \
+                  > "${DEST}"
+              else
+                printf '%s' "${BASE}" > "${DEST}"
+              fi
+
+          # Inlined from tekton-integration-catalog get-unreleased-bundle StepAction so
+          # we can set DOCKER_CONFIG (forbidden on steps that use ref).
+          # Outputs go to bundle-meta volume — not step results — because Tekton
+          # forbids step-result path substitutions inside Task step scripts.
           - name: get-bundle
+            image: quay.io/konflux-ci/konflux-test:v1.4.48@sha256:9b815268fb2bf10b5d745518da1c6568944f15816efe51adc192972b42a6e74d
             computeResources:
               limits:
                 memory: 8Gi
@@ -219,26 +245,89 @@ spec:
             env:
               - name: DOCKER_CONFIG
                 value: /workspace/docker-config
+              - name: FBC_FRAGMENT
+                value: "$(tasks.parse-metadata.results.component-container-image)"
+              - name: PACKAGE_NAME
+                value: $(params.PACKAGE_NAME)
+              - name: CHANNEL_NAME
+                value: $(params.CHANNEL_NAME)
+              - name: META_DIR
+                value: /workspace/bundle-meta
             volumeMounts:
               - name: docker-config
                 mountPath: /workspace/docker-config
                 readOnly: true
-            ref:
-              resolver: git
-              params:
-                - name: url
-                  value: https://github.com/konflux-ci/tekton-integration-catalog.git
-                - name: revision
-                  value: main
-                - name: pathInRepo
-                  value: stepactions/bundles/get-unreleased-bundle/0.1/get-unreleased-bundle.yaml
-            params:
-              - name: fbcFragment
-                value: "$(tasks.parse-metadata.results.component-container-image)"
-              - name: packageName
-                value: $(params.PACKAGE_NAME)
-              - name: channelName
-                value: $(params.CHANNEL_NAME)
+              - name: bundle-meta
+                mountPath: /workspace/bundle-meta
+            script: |
+              #!/usr/bin/env bash
+              set -euo pipefail
+              . /utils.sh
+
+              write_meta() {
+                local bundle="${1:-}"
+                local pkg="${2:-}"
+                local channel="${3:-}"
+                echo -n "${bundle}" > "${META_DIR}/unreleasedBundle"
+                echo -n "${pkg}" > "${META_DIR}/packageName"
+                echo -n "${channel}" > "${META_DIR}/channelName"
+              }
+
+              if [[ -z "${FBC_FRAGMENT}" ]]; then
+                echo "Error: FBC_FRAGMENT parameter is required." >&2
+                exit 1
+              fi
+
+              echo "Retrieving unreleased bundles..."
+              if ! unreleased_bundles=$(get_unreleased_bundles -i "$FBC_FRAGMENT"); then
+                echo "Could not get unreleased bundle images from the fragment. Make sure you have ImagePullCredentials for registry.redhat.io (set REGISTRY_PULL_SECRET or link a pull secret to konflux-integration-runner)" >&2
+                exit 1
+              fi
+
+              if [[ -z "${unreleased_bundles}" ]]; then
+                echo "No unreleased bundles found. Exiting as a no-op."
+                write_meta "" "" ""
+                exit 0
+              fi
+              echo "Unreleased bundles found: $unreleased_bundles"
+
+              if ! RENDER_OUT_FBC=$(render_opm -t "$FBC_FRAGMENT"); then
+                echo "Failed to render the FBC fragment" >&2
+                exit 1
+              fi
+
+              if [[ -z "$PACKAGE_NAME" ]]; then
+                echo "Checking package association of unreleased bundles..."
+                package_image_map=$(group_bundle_images_by_package "$RENDER_OUT_FBC" "$unreleased_bundles")
+                echo "Package-image map: $package_image_map"
+                package_count=$(echo "$package_image_map" | jq 'keys | length')
+
+                if [[ "$package_count" -gt 1 ]]; then
+                  echo "Error: Multiple packages detected. User must specify PACKAGE_NAME." >&2
+                  exit 1
+                fi
+
+                PACKAGE_NAME=$(echo "$package_image_map" | jq -r 'keys[0]')
+              fi
+              echo "Using package: $PACKAGE_NAME"
+
+              if [[ -z "$CHANNEL_NAME" ]]; then
+                CHANNEL_NAME=$(get_channel_from_catalog "$RENDER_OUT_FBC" "$PACKAGE_NAME")
+                if [[ -z "$CHANNEL_NAME" ]]; then
+                  echo "Failed to determine a default channel for package '$PACKAGE_NAME'" >&2
+                  exit 1
+                fi
+              fi
+              echo "Using channel: $CHANNEL_NAME"
+
+              if ! highest_version_from_bundles_list=$(get_highest_version_from_bundles_list "$RENDER_OUT_FBC" "$PACKAGE_NAME" "$CHANNEL_NAME" "$unreleased_bundles"); then
+                echo "No unreleased bundle(s) found matching the specified package and/or channel. Exiting as a no-op."
+                write_meta "" "" ""
+                exit 0
+              fi
+
+              echo "Highest bundle: $highest_version_from_bundles_list"
+              write_meta "$highest_version_from_bundles_list" "$PACKAGE_NAME" "$CHANNEL_NAME"
 
           # Catalog refs point at registry.redhat.io (401 for unreleased images).
           # Resolve the same digest on quay.io before any step tries opm render.
@@ -249,34 +338,36 @@ spec:
                 value: /workspace/docker-config
               - name: FBC_FRAGMENT
                 value: "$(tasks.parse-metadata.results.component-container-image)"
-              - name: BUNDLE_IMAGE
-                value: "$(steps.get-bundle.results.unreleasedBundle)"
+              - name: META_DIR
+                value: /workspace/bundle-meta
             volumeMounts:
               - name: docker-config
                 mountPath: /workspace/docker-config
                 readOnly: true
+              - name: bundle-meta
+                mountPath: /workspace/bundle-meta
             script: |
               #!/usr/bin/env bash
               set -euo pipefail
 
-              # Task-level result path (Tekton substitutes before bash runs).
-              RESULT_PATH=$(results.quayBundle.path)
+              BUNDLE_IMAGE="$(cat "${META_DIR}/unreleasedBundle")"
+              QUAY_OUT="${META_DIR}/quayBundle"
 
               if [[ -z "${BUNDLE_IMAGE}" ]]; then
-                echo -n "" > "${RESULT_PATH}"
+                echo -n "" > "${QUAY_OUT}"
                 exit 0
               fi
 
               # Already a quay ref — pass through
               if [[ "${BUNDLE_IMAGE}" == quay.io/* ]]; then
                 echo "Bundle already on quay: ${BUNDLE_IMAGE}"
-                echo -n "${BUNDLE_IMAGE}" > "${RESULT_PATH}"
+                echo -n "${BUNDLE_IMAGE}" > "${QUAY_OUT}"
                 exit 0
               fi
 
               if [[ "${FBC_FRAGMENT}" != quay.io/redhat-user-workloads/* ]]; then
                 echo "FBC not on redhat-user-workloads; keeping catalog ref"
-                echo -n "${BUNDLE_IMAGE}" > "${RESULT_PATH}"
+                echo -n "${BUNDLE_IMAGE}" > "${QUAY_OUT}"
                 exit 0
               fi
 
@@ -300,7 +391,32 @@ spec:
               fi
 
               echo "Resolved quay bundle: ${QUAY_BUNDLE}"
-              echo -n "${QUAY_BUNDLE}" > "${RESULT_PATH}"
+              echo -n "${QUAY_BUNDLE}" > "${QUAY_OUT}"
+
+          - name: emit-task-results
+            image: quay.io/konflux-ci/konflux-test:v1.4.31@sha256:a7cae9e96663e277a3904d0c78630508ddb6cc8eebaa912a840bd20f68dcaad1
+            env:
+              - name: META_DIR
+                value: /workspace/bundle-meta
+              - name: RESULT_UNRELEASED_BUNDLE
+                value: $(results.unreleasedBundle.path)
+              - name: RESULT_QUAY_BUNDLE
+                value: $(results.quayBundle.path)
+              - name: RESULT_PACKAGE_NAME
+                value: $(results.packageName.path)
+              - name: RESULT_CHANNEL_NAME
+                value: $(results.channelName.path)
+            volumeMounts:
+              - name: bundle-meta
+                mountPath: /workspace/bundle-meta
+                readOnly: true
+            script: |
+              #!/usr/bin/env bash
+              set -euo pipefail
+              echo -n "$(cat "${META_DIR}/unreleasedBundle")" > "${RESULT_UNRELEASED_BUNDLE}"
+              echo -n "$(cat "${META_DIR}/quayBundle")" > "${RESULT_QUAY_BUNDLE}"
+              echo -n "$(cat "${META_DIR}/packageName")" > "${RESULT_PACKAGE_NAME}"
+              echo -n "$(cat "${META_DIR}/channelName")" > "${RESULT_CHANNEL_NAME}"
 
     # ── 4. Pick Cluster Params ─────────────────────────────────────────
     - name: pick-cluster-params
@@ -1154,9 +1270,14 @@ spec:
               [[ -f /workspace/install-namespace ]] && INSTALL_NAMESPACE=$(cat /workspace/install-namespace)
 
               source /workspace/scripts/resolve-bundle-config.sh
-              TARGET_NS="${INSTALL_NAMESPACE}"
+              # Prefer TestBundle.spec.namespace (same as tasks/deploy-operands).
+              TARGET_NS="${BUNDLE_NAMESPACE:-${INSTALL_NAMESPACE}}"
 
               echo "[$(date -u +%FT%T.%3NZ)] Deploying operands to: ${TARGET_NS}"
+
+              if [[ -n "${TARGET_NS}" && "${TARGET_NS}" != "${INSTALL_NAMESPACE}" ]]; then
+                oc create namespace "${TARGET_NS}" 2>/dev/null || true
+              fi
 
               # Apply prerequisites
               if [[ -d "${BUNDLE_DIR}/prerequisites" ]]; then
