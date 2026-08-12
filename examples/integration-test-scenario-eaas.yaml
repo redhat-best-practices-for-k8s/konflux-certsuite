@@ -52,8 +52,9 @@ spec:
     #   value: "quay.io/<org>/certsuite-results"   # bare repo only (no :tag / @digest)
     # - name: OCI_RESULTS_SECRET
     #   value: "certsuite-results-push-secret"
-    # External tags automatically include -pr- or -merged- from the
-    # Konflux event type (no ITS param required).
+    # Optional release/stream label (combined with automatic -pr- / -merged-):
+    # - name: RELEASE
+    #   value: "5.0"
   resolverRef:
     resolver: git
     params:

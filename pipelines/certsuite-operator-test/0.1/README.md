@@ -67,6 +67,7 @@ OCI-compliant host):
 |-----------|----------|-------------|
 | `OCI_RESULTS_REPO` | Yes | Bare OCI repo reference (e.g. `quay.io/my-org/certsuite-results` or `docker.io/my-org/certsuite-results`). Must not include a tag or digest. |
 | `OCI_RESULTS_SECRET` | Yes | Name of a `kubernetes.io/dockerconfigjson` Secret in the tenant namespace with push access to `OCI_RESULTS_REPO`. |
+| `RELEASE` | No | Optional release/stream label (e.g. `5.0`) inserted before the `pr`/`merged` segment. |
 
 Create the secret (example for docker.io / Hub):
 
@@ -86,15 +87,17 @@ params:
     value: "docker.io/<org>/<repo>"
   - name: OCI_RESULTS_SECRET
     value: "certsuite-results-push-secret"
+  - name: RELEASE
+    value: "5.0"   # optional
 ```
 
 Credentials are strictly isolated: the component push secret is never sent to
 the external registry, and vice-versa. External tags include the operator
-package name and whether the run was for a PR or a merge/push
-(`certsuite-results-<package>-pr-<timestamp>` or
-`certsuite-results-<package>-merged-<timestamp>`), derived automatically from
-the Konflux PipelineRun `pac.test.appstudio.openshift.io/event-type` label
-(via `parse-metadata`).
+package name, optional `RELEASE`, and whether the run was for a PR or a
+merge/push, e.g. `certsuite-results-<package>-5.0-pr-<timestamp>` or
+`certsuite-results-<package>-merged-<timestamp>`. The `pr`/`merged` segment
+is derived automatically from the Konflux PipelineRun
+`pac.test.appstudio.openshift.io/event-type` label (via `parse-metadata`).
 
 **Failure policy** (`push-results` uses `onError: continue` — never fails the PipelineRun):
 
@@ -108,7 +111,7 @@ the Konflux PipelineRun `pac.test.appstudio.openshift.io/event-type` label
 Download from the `push-results` log line after a successful push:
 
 ```bash
-oras pull <host>/<repo>:certsuite-results-<package>-<pr|merged>-<timestamp>
+oras pull <host>/<repo>:certsuite-results-<package>[-<release>]-<pr|merged>-<timestamp>
 tar xzf certsuite-results.tar.gz
 ```
 
