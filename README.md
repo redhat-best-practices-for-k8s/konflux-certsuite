@@ -67,7 +67,7 @@ examples/           Example IntegrationTestScenario, OADP backup, test bundle
 | `OCI_PUSH_SECRET` | no | placeholder | `dockerconfigjson` Secret for pushing results to the component Quay repo |
 | `OCI_RESULTS_REPO` | no | `""` | Bare external OCI repo (no tag/digest). When set, results go here instead of the component repo |
 | `OCI_RESULTS_SECRET` | no* | placeholder | `dockerconfigjson` Secret with push access to `OCI_RESULTS_REPO` (*required when that repo is set) |
-| `RELEASE` | no | `""` | Optional release/stream label in the OCI tag and as annotations (`certsuite.redhat.com/release`, `org.opencontainers.image.version`) |
+| `OCP_RELEASE` | no | `""` | Optional OpenShift release/stream label in the OCI tag and as annotations (`certsuite.redhat.com/ocp-release`, `org.opencontainers.image.version`) |
 | `REGISTRY_PULL_SECRET` | no | placeholder | `dockerconfigjson` Secret merged with SA auth for `get-unreleased-bundle` (e.g. `registry.redhat.io`) |
 See [OCI Results Storage](pipelines/certsuite-operator-test/0.1/README.md#oci-results-storage) for setup and download instructions.
 
