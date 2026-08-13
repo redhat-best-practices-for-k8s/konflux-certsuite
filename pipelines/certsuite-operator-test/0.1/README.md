@@ -98,7 +98,10 @@ the external registry, and vice-versa.
 
 **Tag format** (no `certsuite-results-` prefix):
 `<package>[-<release>]-<pr|merged>-<timestamp>`
-e.g. `openperouter-operator-5.0-pr-20260812-183001`
+e.g. `openperouter-operator-5.0-pr-2026-08-12T18-30-01Z`
+
+`<timestamp>` is a UTC ISO 8601 / RFC 3339 instant with `:` replaced by `-`
+(OCI tags cannot contain `:`).
 
 **OCI annotations** on every push:
 | Annotation | Value |

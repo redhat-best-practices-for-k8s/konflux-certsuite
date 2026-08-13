@@ -111,6 +111,8 @@ spec:
       description: |
         Optional release/stream label (e.g. "5.0"). When set:
         - included in the OCI tag as <package>-<release>-<pr|merged>-<timestamp>
+          (timestamp is UTC ISO 8601 / RFC 3339 with ':' → '-' for OCI tag safety,
+          e.g. 2026-08-12T18-30-01Z)
         - set as OCI annotations certsuite.redhat.com/release and
           org.opencontainers.image.version
         The pr/merged segment and certsuite.redhat.com/trigger annotation
@@ -1458,14 +1460,18 @@ spec:
               esac
               echo "TEST_EVENT_TYPE=${TEST_EVENT_TYPE:-<empty>} → trigger segment=${TRIGGER_SEGMENT}"
 
+              # Timestamp: ISO 8601 / RFC 3339 instant in UTC. Colons in the
+              # time are replaced with hyphens because OCI tags disallow ':'.
+              # Example: 2026-08-12T18-30-01Z
+              TS="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
               if [ "${USE_EXTERNAL}" = "true" ] && [ -n "${PACKAGE_NAME}" ]; then
                 if [ -n "${RELEASE}" ]; then
-                  OCI_TAG="${PACKAGE_NAME}-${RELEASE}-${TRIGGER_SEGMENT}-$(date -u +%Y%m%d-%H%M%S)"
+                  OCI_TAG="${PACKAGE_NAME}-${RELEASE}-${TRIGGER_SEGMENT}-${TS}"
                 else
-                  OCI_TAG="${PACKAGE_NAME}-${TRIGGER_SEGMENT}-$(date -u +%Y%m%d-%H%M%S)"
+                  OCI_TAG="${PACKAGE_NAME}-${TRIGGER_SEGMENT}-${TS}"
                 fi
               else
-                OCI_TAG="${TRIGGER_SEGMENT}-$(date -u +%Y%m%d-%H%M%S)"
+                OCI_TAG="${TRIGGER_SEGMENT}-${TS}"
               fi
               OCI_REF="${IMAGE_REF}:${OCI_TAG}"
 
