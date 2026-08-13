@@ -69,7 +69,7 @@ OCI-compliant host):
 |-----------|----------|-------------|
 | `OCI_RESULTS_REPO` | Yes | Bare OCI repo reference (e.g. `quay.io/my-org/certsuite-results` or `docker.io/my-org/certsuite-results`). Must not include a tag or digest. |
 | `OCI_RESULTS_SECRET` | Yes | Name of a `kubernetes.io/dockerconfigjson` Secret in the tenant namespace with push access to `OCI_RESULTS_REPO`. |
-| `RELEASE` | No | Optional release/stream label (e.g. `5.0`) in the tag and as OCI annotations. |
+| `OCP_RELEASE` | No | Optional OpenShift release/stream label (e.g. `5.0`) in the tag and as OCI annotations. |
 
 Create the secret (example for docker.io / Hub):
 
@@ -89,7 +89,7 @@ params:
     value: "docker.io/<org>/<repo>"
   - name: OCI_RESULTS_SECRET
     value: "certsuite-results-push-secret"
-  - name: RELEASE
+  - name: OCP_RELEASE
     value: "5.0"   # optional
 ```
 
@@ -97,7 +97,7 @@ Credentials are strictly isolated: the component push secret is never sent to
 the external registry, and vice-versa.
 
 **Tag format** (no `certsuite-results-` prefix):
-`<package>[-<release>]-<pr|merged>-<timestamp>`
+`<package>[-<ocp-release>]-<pr|merged>-<timestamp>`
 e.g. `openperouter-operator-5.0-pr-2026-08-12T18-30-01Z`
 
 `<timestamp>` is a UTC ISO 8601 / RFC 3339 instant with `:` replaced by `-`
@@ -107,8 +107,8 @@ e.g. `openperouter-operator-5.0-pr-2026-08-12T18-30-01Z`
 | Annotation | Value |
 |------------|--------|
 | `certsuite.redhat.com/trigger` | `pr` or `merged` (from PipelineRun event-type) |
-| `certsuite.redhat.com/release` | `RELEASE` when set |
-| `org.opencontainers.image.version` | `RELEASE` when set |
+| `certsuite.redhat.com/ocp-release` | `OCP_RELEASE` when set |
+| `org.opencontainers.image.version` | `OCP_RELEASE` when set |
 | `quay.expires-after` | `7d` for **PR** artifacts only (Quay GC) |
 
 The `pr`/`merged` segment is derived from
@@ -126,7 +126,7 @@ The `pr`/`merged` segment is derived from
 Download from the `push-results` log line after a successful push:
 
 ```bash
-oras pull <host>/<repo>:<package>[-<release>]-<pr|merged>-<timestamp>
+oras pull <host>/<repo>:<package>[-<ocp-release>]-<pr|merged>-<timestamp>
 tar xzf certsuite-results.tar.gz
 ```
 

@@ -52,8 +52,8 @@ spec:
     #   value: "quay.io/<org>/certsuite-results"   # bare repo only (no :tag / @digest)
     # - name: OCI_RESULTS_SECRET
     #   value: "certsuite-results-push-secret"
-    # Optional release/stream label (tag + OCI annotations; PR expires in 7d):
-    # - name: RELEASE
+    # Optional OpenShift release/stream label (tag + OCI annotations; PR expires in 7d):
+    # - name: OCP_RELEASE
     #   value: "5.0"
   resolverRef:
     resolver: git

@@ -105,15 +105,15 @@ spec:
 
         Prefer this param over namespace-wide SA linking when only certsuite
         needs the registry.redhat.io credentials.
-    - name: RELEASE
+    - name: OCP_RELEASE
       type: string
       default: ""
       description: |
-        Optional release/stream label (e.g. "5.0"). When set:
-        - included in the OCI tag as <package>-<release>-<pr|merged>-<timestamp>
+        Optional OpenShift release/stream label (e.g. "5.0"). When set:
+        - included in the OCI tag as <package>-<ocp-release>-<pr|merged>-<timestamp>
           (timestamp is UTC ISO 8601 / RFC 3339 with ':' → '-' for OCI tag safety,
           e.g. 2026-08-12T18-30-01Z)
-        - set as OCI annotations certsuite.redhat.com/release and
+        - set as OCI annotations certsuite.redhat.com/ocp-release and
           org.opencontainers.image.version
         The pr/merged segment and certsuite.redhat.com/trigger annotation
         are always derived from the PipelineRun event-type (via parse-metadata).
@@ -731,8 +731,8 @@ spec:
           value: $(params.PIPELINE_SCRIPTS_REF)
         - name: testEventType
           value: $(tasks.parse-metadata.results.test-event-type)
-        - name: release
-          value: $(params.RELEASE)
+        - name: ocpRelease
+          value: $(params.OCP_RELEASE)
       taskSpec:
         params:
           - name: eaasSpaceSecretRef
@@ -762,7 +762,7 @@ spec:
           - name: testEventType
             type: string
             default: ""
-          - name: release
+          - name: ocpRelease
             type: string
             default: ""
         volumes:
@@ -1391,8 +1391,8 @@ spec:
                 value: "$(params.ociResultsRepo)"
               - name: TEST_EVENT_TYPE
                 value: "$(params.testEventType)"
-              - name: RELEASE
-                value: "$(params.release)"
+              - name: OCP_RELEASE
+                value: "$(params.ocpRelease)"
             script: |
               #!/bin/sh
               set -eu
@@ -1450,9 +1450,9 @@ spec:
 
               # ── Build tag ──────────────────────────────────────────────
               # External repos are shared across operators, so include the
-              # package name. Optional RELEASE adds a stream segment (e.g. 5.0).
+              # package name. Optional OCP_RELEASE adds a stream segment (e.g. 5.0).
               # pr vs merged comes from Konflux event-type (parse-metadata).
-              # No "certsuite-results-" prefix — release/trigger also go on
+              # No "certsuite-results-" prefix — ocp-release/trigger also go on
               # OCI annotations (see oras push below).
               case "${TEST_EVENT_TYPE}" in
                 push|Push) TRIGGER_SEGMENT="merged" ;;
@@ -1465,8 +1465,8 @@ spec:
               # Example: 2026-08-12T18-30-01Z
               TS="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
               if [ "${USE_EXTERNAL}" = "true" ] && [ -n "${PACKAGE_NAME}" ]; then
-                if [ -n "${RELEASE}" ]; then
-                  OCI_TAG="${PACKAGE_NAME}-${RELEASE}-${TRIGGER_SEGMENT}-${TS}"
+                if [ -n "${OCP_RELEASE}" ]; then
+                  OCI_TAG="${PACKAGE_NAME}-${OCP_RELEASE}-${TRIGGER_SEGMENT}-${TS}"
                 else
                   OCI_TAG="${PACKAGE_NAME}-${TRIGGER_SEGMENT}-${TS}"
                 fi
@@ -1478,11 +1478,11 @@ spec:
               echo "Packaging results..."
               tar czf /tmp/certsuite-results.tar.gz -C /workspace results/
 
-              # OCI annotations: release + trigger; PR artifacts expire in Quay after 7d.
+              # OCI annotations: ocp-release + trigger; PR artifacts expire in Quay after 7d.
               ORAS_ANNOTATIONS="--annotation certsuite.redhat.com/trigger=${TRIGGER_SEGMENT}"
-              if [ -n "${RELEASE}" ]; then
-                ORAS_ANNOTATIONS="${ORAS_ANNOTATIONS} --annotation certsuite.redhat.com/release=${RELEASE}"
-                ORAS_ANNOTATIONS="${ORAS_ANNOTATIONS} --annotation org.opencontainers.image.version=${RELEASE}"
+              if [ -n "${OCP_RELEASE}" ]; then
+                ORAS_ANNOTATIONS="${ORAS_ANNOTATIONS} --annotation certsuite.redhat.com/ocp-release=${OCP_RELEASE}"
+                ORAS_ANNOTATIONS="${ORAS_ANNOTATIONS} --annotation org.opencontainers.image.version=${OCP_RELEASE}"
               fi
               if [ "${TRIGGER_SEGMENT}" = "pr" ]; then
                 ORAS_ANNOTATIONS="${ORAS_ANNOTATIONS} --annotation quay.expires-after=7d"
@@ -1490,9 +1490,9 @@ spec:
 
               echo "Pushing results to: ${OCI_REF}"
               if [ "${TRIGGER_SEGMENT}" = "pr" ]; then
-                echo "Annotations: trigger=${TRIGGER_SEGMENT} release=${RELEASE:-<none>} expires=7d"
+                echo "Annotations: trigger=${TRIGGER_SEGMENT} ocp-release=${OCP_RELEASE:-<none>} expires=7d"
               else
-                echo "Annotations: trigger=${TRIGGER_SEGMENT} release=${RELEASE:-<none>} expires=none"
+                echo "Annotations: trigger=${TRIGGER_SEGMENT} ocp-release=${OCP_RELEASE:-<none>} expires=none"
               fi
               cd /tmp
               # shellcheck disable=SC2086
@@ -1521,7 +1521,7 @@ spec:
     #   a) the same Quay repo as the FBC/component image (OCI_PUSH_SECRET),
     #      tagged <pr|merged>-<timestamp>, or
     #   b) an external repo (OCI_RESULTS_REPO + OCI_RESULTS_SECRET),
-    #      tagged <package>[-<release>]-<pr|merged>-<timestamp>.
-    # Annotations: certsuite.redhat.com/trigger, optional release /
+    #      tagged <package>[-<ocp-release>]-<pr|merged>-<timestamp>.
+    # Annotations: certsuite.redhat.com/trigger, optional ocp-release /
     # org.opencontainers.image.version; quay.expires-after=7d for PR artifacts.
     # Download with: oras pull <OCI_REF printed in push-results logs>

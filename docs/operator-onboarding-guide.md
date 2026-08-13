@@ -367,7 +367,7 @@ OCI results push is optional and needs a registry Secret only if you enable it.
        value: "quay.io/<org>/certsuite-results"   # bare repo, no tag/digest
      - name: OCI_RESULTS_SECRET
        value: "certsuite-results-push-secret"
-     - name: RELEASE
+     - name: OCP_RELEASE
        value: "5.0"   # optional; tag + OCI annotations (PR artifacts expire in 7d)
    ```
 
