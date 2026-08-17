@@ -27,8 +27,8 @@ flowchart TD
 |-------|-------------|
 | `provision-eaas-space` | Allocates an EaaS space for cluster provisioning |
 | `get-unreleased-bundle` | Extracts the operator bundle from the FBC fragment |
-| `pick-cluster-params` | Selects OCP version and architecture from supported list |
-| `provision-cluster` | Creates an ephemeral Hypershift AWS cluster |
+| `pick-cluster-params` | Reads FBC target minor; maps to a supported EaaS version (fallback if needed) and bundle arch |
+| `provision-cluster` | Resolves latest z-stream for that minor and creates an ephemeral Hypershift AWS cluster |
 | `deploy-and-test` | Gets kubeconfig, deploys operator via OLM, deploys operands from test bundle, runs certsuite |
 | `collect-results` | Optionally pushes claim.json to cert-track-results and/or OCI |
 
@@ -214,7 +214,7 @@ Results are pushed as OCI artifacts (via `oras`) with artifact type
 | Mode | Parameters | Tag format | Description |
 |------|-----------|------------|-------------|
 | **Component repo** (default) | `OCI_PUSH_SECRET` | `<pr\|merged>-<timestamp>` | Results are tagged on the same Quay repo as the FBC/component image. |
-| **External repo** | `OCI_RESULTS_REPO` + `OCI_RESULTS_SECRET` (+ optional `OCP_RELEASE`) | `<package>[-<ocp-release>]-<pr\|merged>-<timestamp>` | Results are pushed to a dedicated OCI registry. `pr`/`merged` and optional `OCP_RELEASE` are also set as OCI annotations; PR artifacts get `quay.expires-after=7d`. |
+| **External repo** | `OCI_RESULTS_REPO` + `OCI_RESULTS_SECRET` | `<package>[-<ocp-release>]-<pr\|merged>-<timestamp>` | Results are pushed to a dedicated OCI registry. `ocp-release` is the FBC target minor (not a pipeline param). `pr`/`merged`, FBC target, and the provisioned cluster version (`ocp-version-actual`) are set as OCI annotations; PR artifacts get `quay.expires-after=7d`. |
 
 `OCI_RESULTS_REPO` must be a bare repository reference (no `:tag` or
 `@digest`). Host:port forms such as `registry.example.com:5000/repo` are

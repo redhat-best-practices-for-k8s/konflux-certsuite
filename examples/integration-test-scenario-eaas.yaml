@@ -56,9 +56,9 @@ spec:
     #   value: "quay.io/<org>/certsuite-results"   # bare repo only (no :tag / @digest)
     # - name: OCI_RESULTS_SECRET
     #   value: "certsuite-results-push-secret"
-    # Optional OpenShift release/stream label (tag + OCI annotations; PR expires in 7d):
-    # - name: OCP_RELEASE
-    #   value: "5.0"
+    # ocp-release (FBC target minor) and ocp-version-actual (provisioned
+    # cluster, including EaaS fallback + z-stream) are derived at runtime.
+    # Existing ITS that still pass OCP_RELEASE are ignored.
   resolverRef:
     resolver: git
     params:

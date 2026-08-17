@@ -403,8 +403,8 @@ OCI results push is optional and needs a registry Secret only if you enable it.
        value: "quay.io/<org>/certsuite-results"   # bare repo, no tag/digest
      - name: OCI_RESULTS_SECRET
        value: "certsuite-results-push-secret"
-     - name: OCP_RELEASE
-       value: "5.0"   # optional; tag + OCI annotations (PR artifacts expire in 7d)
+     # ocp-release / ocp-version-actual are derived at runtime from the FBC
+     # fragment and the provisioned EaaS cluster; do not pass OCP_RELEASE.
    ```
 
    See [OCI Results Storage](../pipelines/certsuite-operator-test/0.1/README.md#oci-results-storage)
