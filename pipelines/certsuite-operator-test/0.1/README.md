@@ -17,7 +17,7 @@ cluster is automatically destroyed when the PipelineRun completes.
 1. `parse-metadata` -- extract snapshot info
 2. `provision-eaas-space` -- allocate EaaS space
 3. `get-unreleased-bundle` -- get catalog bundle ref + resolve quay.io bundle
-4. `pick-cluster-params` -- OCP version/arch from the pullable quay bundle
+4. `pick-cluster-params` -- FBC target minor, EaaS-supported version (with fallback), and bundle arch
 5. `build-image-content-sources` -- load `.tekton/images-mirror-set.yaml`
    (from `TEST_BUNDLE_REF` repo by default) → Hypershift `imageContentSources`
 6. `provision-cluster` -- create ephemeral cluster with those mirrors (HCCO
@@ -53,6 +53,24 @@ FBC is not on `quay.io/redhat-user-workloads`).
 | `CHANNEL_NAME` | No | auto-detected from FBC | OLM channel override |
 | `PIPELINE_SCRIPTS_REF` | No | same repo/branch as pipeline | Git ref to pipeline scripts (advanced — used for testing pipeline changes from forks) |
 
+### Cluster version selection
+
+`OCP_RELEASE` is **not** a pipeline parameter and is **not** used to pick the
+cluster. Existing IntegrationTestScenarios that still pass it are ignored.
+
+1. **FBC target minor** — `get_ocp_version_from_fbc_fragment` on the snapshot
+   FBC image (`pick-cluster-params` / `record-fbc-ocp-version`). Stored as
+   result `fbcOcpVersion` (for example `4.22`).
+2. **Supported list** — `eaas-get-supported-ephemeral-cluster-versions`.
+3. **Fallback** — if the FBC target is not in that list and is **higher** than
+   the highest supported minor, use the highest supported minor; otherwise
+   no-op (empty `ocpVersion`). `pick-cluster-version` overwrites `ocpVersion`
+   with this fallback; `fbcOcpVersion` keeps the original FBC target.
+4. **Exact payload** — `eaas-get-latest-openshift-version-by-prefix` (latest
+   z-stream on `4-stable-multi` for that minor). Passed to Hypershift
+   `create-cluster` as `version` and recorded as `ocpVersionActual`
+   (for example `4.19.7`).
+
 ### Registry Pull Secret (optional)
 
 `get-unreleased-bundle` needs to pull/inspect images from registries such as
@@ -84,7 +102,6 @@ OCI-compliant host):
 |-----------|----------|-------------|
 | `OCI_RESULTS_REPO` | Yes | Bare OCI repo reference (e.g. `quay.io/my-org/certsuite-results` or `docker.io/my-org/certsuite-results`). Must not include a tag or digest. |
 | `OCI_RESULTS_SECRET` | Yes | Name of a `kubernetes.io/dockerconfigjson` Secret in the tenant namespace with push access to `OCI_RESULTS_REPO`. |
-| `OCP_RELEASE` | No | Optional OpenShift release/stream label (e.g. `5.0`) in the tag and as OCI annotations. |
 
 Create the secret (example for docker.io / Hub):
 
@@ -104,8 +121,6 @@ params:
     value: "docker.io/<org>/<repo>"
   - name: OCI_RESULTS_SECRET
     value: "certsuite-results-push-secret"
-  - name: OCP_RELEASE
-    value: "5.0"   # optional
 ```
 
 Credentials are strictly isolated: the component push secret is never sent to
@@ -113,18 +128,23 @@ the external registry, and vice-versa.
 
 **Tag format** (no `certsuite-results-` prefix):
 `<package>[-<ocp-release>]-<pr|merged>-<timestamp>`
-e.g. `openperouter-operator-5.0-pr-2026-08-12T18-30-01Z`
+e.g. `openperouter-operator-4.22-pr-2026-08-12T18-30-01Z`
 
-`<timestamp>` is a UTC ISO 8601 / RFC 3339 instant with `:` replaced by `-`
-(OCI tags cannot contain `:`).
+`<ocp-release>` is the **FBC target minor** (before EaaS fallback), not a
+pipeline param. `<timestamp>` is a UTC ISO 8601 / RFC 3339 instant with `:`
+replaced by `-` (OCI tags cannot contain `:`).
 
 **OCI annotations** on every push:
-| Annotation | Value |
-|------------|--------|
-| `certsuite.redhat.com/trigger` | `pr` or `merged` (from PipelineRun event-type) |
-| `certsuite.redhat.com/ocp-release` | `OCP_RELEASE` when set |
-| `org.opencontainers.image.version` | `OCP_RELEASE` when set |
-| `quay.expires-after` | `7d` for **PR** artifacts only (Quay GC) |
+| Annotation | Source | Example |
+|------------|--------|---------|
+| `certsuite.redhat.com/trigger` | PipelineRun event-type | `pr` or `merged` |
+| `certsuite.redhat.com/ocp-release` | FBC target minor (before EaaS fallback) | `4.22` |
+| `org.opencontainers.image.version` | Same as `ocp-release` | `4.22` |
+| `certsuite.redhat.com/ocp-version-actual` | Provisioned cluster (fallback + z-stream) | `4.19.7` |
+| `quay.expires-after` | `7d` for **PR** artifacts only (Quay GC) | `7d` |
+
+After a fallback run, `oras manifest fetch` shows `ocp-version-actual`
+different from `ocp-release`.
 
 The `pr`/`merged` segment is derived from
 `pac.test.appstudio.openshift.io/event-type` via `parse-metadata`.
@@ -141,7 +161,7 @@ The `pr`/`merged` segment is derived from
 Download from the `push-results` log line after a successful push:
 
 ```bash
-oras pull <host>/<repo>:<package>[-<ocp-release>]-<pr|merged>-<timestamp>
+oras pull <host>/<repo>:<package>[-<fbc-minor>]-<pr|merged>-<timestamp>
 tar xzf certsuite-results.tar.gz
 ```
 

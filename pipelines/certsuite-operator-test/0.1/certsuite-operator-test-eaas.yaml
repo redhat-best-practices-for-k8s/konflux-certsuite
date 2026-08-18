@@ -105,19 +105,6 @@ spec:
 
         Prefer this param over namespace-wide SA linking when only certsuite
         needs the registry.redhat.io credentials.
-    - name: OCP_RELEASE
-      type: string
-      default: ""
-      description: |
-        Optional OpenShift release/stream label (e.g. "5.0"). When set:
-        - included in the OCI tag as <package>-<ocp-release>-<pr|merged>-<timestamp>
-          (timestamp is UTC ISO 8601 / RFC 3339 with ':' → '-' for OCI tag safety,
-          e.g. 2026-08-12T18-30-01Z)
-        - set as OCI annotations certsuite.redhat.com/ocp-release and
-          org.opencontainers.image.version
-        The pr/merged segment and certsuite.redhat.com/trigger annotation
-        are always derived from the PipelineRun event-type (via parse-metadata).
-        PR artifacts also get quay.expires-after=7d.
 
   tasks:
     # ── 1. Parse Snapshot Metadata ──────────────────────────────────────
@@ -430,11 +417,46 @@ spec:
           values: [""]
       taskSpec:
         results:
+          # Original FBC target minor (before EaaS fallback). Written by the
+          # inline record-fbc-ocp-version step so it is not overwritten when
+          # pick-cluster-version falls back to the highest supported minor.
+          - name: fbcOcpVersion
+            description: Target OCP minor from the FBC fragment (before EaaS fallback)
           - name: ocpVersion
             value: "$(steps.pick-cluster-version.results.ocpVersion)"
           - name: bundleArch
             value: "$(steps.pick-cluster-arch.results.bundleArch)"
         steps:
+          # Capture the FBC target independently of pick-cluster-version,
+          # which overwrites ocpVersion with the EaaS fallback minor.
+          # Same image as pick-cluster-version (provides /utils.sh).
+          - name: record-fbc-ocp-version
+            image: quay.io/redhat-appstudio/konflux-test:v1.4.18@sha256:78c76869d0b171e9bfa5e931e5e6ecbe92b32f61c6ec627c57cbb9d1aad75aab
+            env:
+              - name: FBC_FRAGMENT
+                value: "$(tasks.parse-metadata.results.component-container-image)"
+              - name: RESULT_FBC_OCP_VERSION
+                value: $(results.fbcOcpVersion.path)
+            script: |
+              #!/usr/bin/env bash
+              set -euo pipefail
+              . /utils.sh
+
+              if [ -z "${FBC_FRAGMENT}" ]; then
+                echo "ERROR: fbcFragment is empty" >&2
+                exit 1
+              fi
+
+              # Backticks: Tekton treats dollar-paren substitution in inlined
+              # pipelineSpec as a variable reference.
+              if ! ocp_version=`get_ocp_version_from_fbc_fragment "${FBC_FRAGMENT}"`; then
+                echo "ERROR: Failed to determine target OCP version from FBC fragment." >&2
+                exit 1
+              fi
+
+              ocp_version="${ocp_version#v}"
+              echo "FBC target OCP version: ${ocp_version}"
+              echo -n "${ocp_version}" > "${RESULT_FBC_OCP_VERSION}"
           - name: get-supported-versions
             ref:
               resolver: git
@@ -661,6 +683,9 @@ spec:
         results:
           - name: clusterName
             value: "$(steps.create-cluster.results.clusterName)"
+          - name: ocpVersionActual
+            description: Exact OpenShift version provisioned (latest z-stream for the selected minor)
+            value: "$(steps.get-latest-version-tag.results.version)"
         steps:
           - name: get-latest-version-tag
             ref:
@@ -731,8 +756,10 @@ spec:
           value: $(params.PIPELINE_SCRIPTS_REF)
         - name: testEventType
           value: $(tasks.parse-metadata.results.test-event-type)
-        - name: ocpRelease
-          value: $(params.OCP_RELEASE)
+        - name: fbcOcpVersion
+          value: "$(tasks.pick-cluster-params.results.fbcOcpVersion)"
+        - name: ocpVersionActual
+          value: "$(tasks.provision-cluster.results.ocpVersionActual)"
       taskSpec:
         params:
           - name: eaasSpaceSecretRef
@@ -762,9 +789,14 @@ spec:
           - name: testEventType
             type: string
             default: ""
-          - name: ocpRelease
+          - name: fbcOcpVersion
             type: string
             default: ""
+            description: Target OCP minor from the FBC fragment (before EaaS fallback)
+          - name: ocpVersionActual
+            type: string
+            default: ""
+            description: Exact OpenShift version of the provisioned EaaS cluster
         volumes:
           - name: credentials
             emptyDir: {}
@@ -1392,7 +1424,9 @@ spec:
               - name: TEST_EVENT_TYPE
                 value: "$(params.testEventType)"
               - name: OCP_RELEASE
-                value: "$(params.ocpRelease)"
+                value: "$(params.fbcOcpVersion)"
+              - name: OCP_VERSION_ACTUAL
+                value: "$(params.ocpVersionActual)"
             script: |
               #!/bin/sh
               set -eu
@@ -1450,10 +1484,11 @@ spec:
 
               # ── Build tag ──────────────────────────────────────────────
               # External repos are shared across operators, so include the
-              # package name. Optional OCP_RELEASE adds a stream segment (e.g. 5.0).
+              # package name. FBC target minor (OCP_RELEASE) adds a stream
+              # segment (e.g. 4.22) when pick-cluster-params recorded it.
               # pr vs merged comes from Konflux event-type (parse-metadata).
-              # No "certsuite-results-" prefix — ocp-release/trigger also go on
-              # OCI annotations (see oras push below).
+              # No "certsuite-results-" prefix — ocp-release / ocp-version-actual
+              # / trigger also go on OCI annotations (see oras push below).
               case "${TEST_EVENT_TYPE}" in
                 push|Push) TRIGGER_SEGMENT="merged" ;;
                 *)         TRIGGER_SEGMENT="pr" ;;
@@ -1478,11 +1513,15 @@ spec:
               echo "Packaging results..."
               tar czf /tmp/certsuite-results.tar.gz -C /workspace results/
 
-              # OCI annotations: ocp-release + trigger; PR artifacts expire in Quay after 7d.
+              # OCI annotations: FBC target (ocp-release), provisioned cluster
+              # (ocp-version-actual), trigger; PR artifacts expire in Quay after 7d.
               ORAS_ANNOTATIONS="--annotation certsuite.redhat.com/trigger=${TRIGGER_SEGMENT}"
               if [ -n "${OCP_RELEASE}" ]; then
                 ORAS_ANNOTATIONS="${ORAS_ANNOTATIONS} --annotation certsuite.redhat.com/ocp-release=${OCP_RELEASE}"
                 ORAS_ANNOTATIONS="${ORAS_ANNOTATIONS} --annotation org.opencontainers.image.version=${OCP_RELEASE}"
+              fi
+              if [ -n "${OCP_VERSION_ACTUAL}" ]; then
+                ORAS_ANNOTATIONS="${ORAS_ANNOTATIONS} --annotation certsuite.redhat.com/ocp-version-actual=${OCP_VERSION_ACTUAL}"
               fi
               if [ "${TRIGGER_SEGMENT}" = "pr" ]; then
                 ORAS_ANNOTATIONS="${ORAS_ANNOTATIONS} --annotation quay.expires-after=7d"
@@ -1490,9 +1529,9 @@ spec:
 
               echo "Pushing results to: ${OCI_REF}"
               if [ "${TRIGGER_SEGMENT}" = "pr" ]; then
-                echo "Annotations: trigger=${TRIGGER_SEGMENT} ocp-release=${OCP_RELEASE:-<none>} expires=7d"
+                echo "Annotations: trigger=${TRIGGER_SEGMENT} ocp-release=${OCP_RELEASE:-<none>} ocp-version-actual=${OCP_VERSION_ACTUAL:-<none>} expires=7d"
               else
-                echo "Annotations: trigger=${TRIGGER_SEGMENT} ocp-release=${OCP_RELEASE:-<none>} expires=none"
+                echo "Annotations: trigger=${TRIGGER_SEGMENT} ocp-release=${OCP_RELEASE:-<none>} ocp-version-actual=${OCP_VERSION_ACTUAL:-<none>} expires=none"
               fi
               cd /tmp
               # shellcheck disable=SC2086
@@ -1521,7 +1560,10 @@ spec:
     #   a) the same Quay repo as the FBC/component image (OCI_PUSH_SECRET),
     #      tagged <pr|merged>-<timestamp>, or
     #   b) an external repo (OCI_RESULTS_REPO + OCI_RESULTS_SECRET),
-    #      tagged <package>[-<ocp-release>]-<pr|merged>-<timestamp>.
-    # Annotations: certsuite.redhat.com/trigger, optional ocp-release /
-    # org.opencontainers.image.version; quay.expires-after=7d for PR artifacts.
+    #      tagged <package>[-<ocp-release>]-<pr|merged>-<timestamp>
+    #      where ocp-release is the FBC target minor (not the EaaS fallback).
+    # Annotations: certsuite.redhat.com/trigger, ocp-release (FBC target),
+    # ocp-version-actual (provisioned cluster, includes fallback + z-stream),
+    # org.opencontainers.image.version (FBC target); quay.expires-after=7d
+    # for PR artifacts.
     # Download with: oras pull <OCI_REF printed in push-results logs>
