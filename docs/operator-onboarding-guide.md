@@ -22,8 +22,8 @@ it.
 
 The test bundle also includes `certsuite_config.yml`, which tells
 certsuite where to find the operator's workloads (namespaces, labels,
-CRD filters). By default, the pipeline runs **all** certsuite tests
-unless a subset is specified via `CERTSUITE_LABELS`.
+CRD filters). By default, the pipeline runs the `common` certsuite
+tests unless a different subset is specified via `CERTSUITE_LABELS`.
 
 ## Bundle Directory Structure
 
@@ -57,8 +57,9 @@ spec:
   # Leave empty to fall back to CSV suggested-namespace, then auto-generate.
   namespace: ""
 
-  # OLM install mode. One of: AllNamespaces, OwnNamespace,
-  # SingleNamespace, MultiNamespace.
+  # OLM install mode. One of: AllNamespaces, OwnNamespace, SingleNamespace.
+  # MultiNamespace is not yet supported by the pipeline and will fail at
+  # deploy time -- do not use it.
   # Leave empty to auto-detect from CSV supported modes
   # (prefers AllNamespaces, then OwnNamespace).
   installMode: ""
@@ -103,7 +104,14 @@ Konflux determines those from the FBC fragment in the Snapshot.
 | Field | Values | Default | Description |
 |-------|--------|---------|-------------|
 | `namespace` | Any string | CSV `suggested-namespace`, then auto-generate `oo-*` | Namespace for both operator install and operand deployment |
-| `installMode` | `AllNamespaces`, `OwnNamespace`, `SingleNamespace`, `MultiNamespace` | Auto-detect from CSV (prefers AllNamespaces, then OwnNamespace) | Determines the OperatorGroup target namespaces |
+| `installMode` | `AllNamespaces`, `OwnNamespace`, `SingleNamespace` | Auto-detect from CSV (prefers AllNamespaces, then OwnNamespace) | Determines the OperatorGroup target namespaces |
+
+> **Note:** `MultiNamespace` is **not yet supported** by the pipeline. Even
+> though it's accepted by the CSV's supported install modes, setting it as
+> your bundle's `installMode` will make the pipeline fail at deploy time
+> with `installMode=MultiNamespace is not yet supported`. If your operator
+> only supports `MultiNamespace`, contact the certsuite pipeline maintainers
+> before onboarding.
 
 ### Discovery Labels
 
@@ -255,7 +263,7 @@ targetCrdFilters:
 | `operatorsUnderTestLabels` | Labels identifying the operator CSV. Must match `discoveryLabels.operator`. |
 | `targetCrdFilters` | CRD name suffixes owned by your operator (for CRD-related tests). |
 
-See the [certsuite configuration reference](https://redhat-best-practices-for-k8s.github.io/certsuite/configuration/)
+See [Certsuite Configuration](https://redhat-best-practices-for-k8s.github.io/certsuite/configuration/)
 for all available fields.
 
 ## Step 4: Add Prerequisites (Optional)
@@ -315,11 +323,13 @@ To generate a boilerplate test bundle:
 ```bash
 ./tools/scaffold-test-bundle.sh \
   --name my-operator \
-  --output /path/to/output
+  --namespace my-operator-ns \
+  --workload-kind Deployment \
+  --output /path/to/your-operator-repo/certsuite-test-bundle
 ```
 
-This creates a complete bundle directory with placeholder manifests
-that you can customize.
+This creates a complete bundle directory (including `certsuite_config.yml`)
+with placeholder manifests that you can customize.
 
 ## Step 7: Onboard to Konflux
 
@@ -330,24 +340,50 @@ OCI results push is optional and needs a registry Secret only if you enable it.
 
 1. **Push the test bundle** to your operator's git repository.
 
-2. **Create an IntegrationTestScenario** using the EaaS pipeline.
+2. **(Optional) Create a registry pull secret.** Only needed if your
+   tenant's ServiceAccount (`konflux-integration-runner`) doesn't already
+   have credentials linked for `registry.redhat.io`. Most setups already
+   have SA-linked credentials, so you can skip this step. If needed:
+
+   ```bash
+   oc create secret docker-registry my-redhat-pull-secret \
+     --docker-server=registry.redhat.io \
+     --docker-username=<user> \
+     --docker-password=<token> \
+     -n <tenant-namespace>
+   ```
+   Then add `REGISTRY_PULL_SECRET: "my-redhat-pull-secret"` to your ITS params.
+
+3. **Create an IntegrationTestScenario.** Three ways:
+   - **Konflux UI** — go to your Application → Integration tests → Add
+   - **CLI** — `oc apply -f integration-test-scenario-eaas.yaml -n <tenant-namespace>`
+   - **GitOps** — add the YAML to your tenants-config repository
+
    See [examples/integration-test-scenario-eaas.yaml](../examples/integration-test-scenario-eaas.yaml).
 
-   The only required parameter is `TEST_BUNDLE_REF`:
+   Typical parameters for unreleased operators:
    ```yaml
    params:
      - name: TEST_BUNDLE_REF
-       value: "https://github.com/org/repo.git#certsuite-test-bundle"
+       value: "https://github.com/org/repo.git@branch#certsuite-test-bundle"
+     # Auto-discovered from TEST_BUNDLE_REF repo when empty; set explicitly
+     # only if the mirror-set file is in a different repo or path.
+     - name: IMAGES_MIRROR_SET_REF
+       value: "https://github.com/org/repo.git@branch#.tekton/images-mirror-set.yaml"
+     - name: OCI_PUSH_SECRET
+       value: "my-component-push-secret"
    resolverRef:
      resolver: git
      params:
        - name: url
          value: https://github.com/redhat-best-practices-for-k8s/konflux-certsuite.git
+       - name: revision
+         value: main
        - name: pathInRepo
          value: pipelines/certsuite-operator-test/0.1/certsuite-operator-test-eaas.yaml
    ```
 
-3. **(Optional) Configure OCI results storage.** By default, results can be
+4. **(Optional) Configure OCI results storage.** By default, results can be
    pushed to the component Quay repo with `OCI_PUSH_SECRET`. To use a
    dedicated external registry instead:
 
@@ -374,8 +410,9 @@ OCI results push is optional and needs a registry Secret only if you enable it.
    See [OCI Results Storage](../pipelines/certsuite-operator-test/0.1/README.md#oci-results-storage)
    for tag formats, validation rules, and download instructions.
 
-4. **Merge a change** to your FBC component. The pipeline triggers
-   automatically on push events.
+5. **Merge a change** to your FBC component. The pipeline triggers
+   automatically whenever Konflux creates a new Snapshot for the component
+   named in the ITS `contexts` field (typically on push to the FBC repo).
 
 ### Option B: Shared Cluster
 
@@ -405,6 +442,69 @@ Use when you need a persistent cluster (e.g. hardware tests).
 
 4. **Merge a change** to your FBC component.
 
+## Image Mirroring for Unreleased Operators
+
+Unreleased operators publish images to internal registries (e.g.
+`registry-proxy.engineering.redhat.com`) that are not reachable from the
+EaaS cluster. The pipeline handles this transparently using
+`images-mirror-set.yaml`:
+
+1. Place `.tekton/images-mirror-set.yaml` in the same git repository and
+   branch referenced by `TEST_BUNDLE_REF`.
+2. The pipeline auto-discovers the file and converts it to Hypershift
+   `imageContentSources` at cluster-provision time, mapping internal
+   registry paths to their external mirror.
+
+Example file (`.tekton/images-mirror-set.yaml`):
+```yaml
+apiVersion: config.openshift.io/v1
+kind: ImageDigestMirrorSet
+metadata:
+  name: my-operator-mirrors
+spec:
+  imageDigestMirrors:
+    - source: registry-proxy.engineering.redhat.com/rh-osbs/my-operator
+      mirrors:
+        - brew.registry.redhat.io/rh-osbs/my-operator
+```
+
+If the mirror set lives in a **different** repo from the test bundle, use
+the `IMAGES_MIRROR_SET_REF` parameter to point to it explicitly.
+
+## Test Labels (CERTSUITE_LABELS)
+
+By default the pipeline runs the `common` test suite. Use the
+`CERTSUITE_LABELS` parameter to select different test categories:
+
+> **Warning:** Never set `CERTSUITE_LABELS` to an empty string (`""`) for
+> the EaaS pipeline. Unlike some other certsuite integrations, the EaaS
+> pipeline passes an empty value straight through to `certsuite run
+> --label-filter ""`, which puts certsuite into **diagnostic mode and
+> launches zero test cases** -- silently, with no pipeline failure. Simply
+> omit the parameter (or leave it unset) to use the `common` default.
+
+| Label | Description |
+|-------|-------------|
+| `common` | Default subset of non-intrusive best-practice checks |
+| `access-control` | RBAC, security context, capabilities |
+| `affiliated-certification` | Helm chart and operator certification status |
+| `lifecycle` | Deployment scaling, pod recreation, graceful shutdown |
+| `networking` | Network policies, dual-stack, multus |
+| `observability` | Logging, termination messages |
+| `operator` | OLM install modes, CSV conditions |
+| `performance` | Resource limits, scheduling |
+| `platform-alteration` | Platform integrity checks |
+| `manageability` | Container port naming |
+| `preflight` | Container image compliance |
+| `all` | Run everything |
+
+Multiple labels: `"networking,lifecycle"` runs both suites.
+
+Expressions: `"access-control && !access-control-sys-admin-capability"` excludes
+specific checks.
+
+Full catalog: [CATALOG.md](https://github.com/redhat-best-practices-for-k8s/certsuite/blob/main/CATALOG.md)
+
 ## Example: ptp-operator
 
 The ptp-operator test bundle at
@@ -423,7 +523,10 @@ demonstrates a real-world bundle:
 | Issue | Cause | Fix |
 |-------|-------|-----|
 | "certsuite-test-bundle.yaml not found" | Wrong `TEST_BUNDLE_REF` path | Check the `#path` fragment in the ref |
-| Operands never become Ready | Missing dependencies or bad config | Test locally first (Step 4) |
+| "certsuite_config.yml not found" | Missing config in test bundle | Add `certsuite_config.yml` to the bundle root (see Step 3) |
+| `get-unreleased-bundle` auth error | Missing or wrong pull secret | Create a `dockerconfigjson` Secret for `registry.redhat.io` and set `REGISTRY_PULL_SECRET` |
+| ImagePullBackOff in EaaS cluster | Unreleased images not mirrored | Add `.tekton/images-mirror-set.yaml` (see Image Mirroring section) |
+| Operands never become Ready | Missing dependencies or bad config | Test locally first (Step 5: Validate Locally) |
 | EaaS cluster provision timeout | MCE/Hypershift issue | Check Konflux status; retry |
 | Lock timeout (shared cluster only) | Another pipeline is running | Increase `LOCK_TIMEOUT` or wait |
 | OADP restore fails (shared cluster only) | Backup expired or missing | Recreate the baseline backup |
