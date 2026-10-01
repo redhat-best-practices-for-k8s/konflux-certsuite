@@ -4,25 +4,25 @@ Two pipeline variants for running the Red Hat Best Practices Test Suite
 for Kubernetes (certsuite) against an operator deployed from an FBC
 fragment.
 
-## EaaS Variant (Recommended)
+## OpenShift CI Variant (Recommended)
 
-**File:** `certsuite-operator-test-eaas.yaml`
+**File:** `certsuite-operator-test-openshift-ci.yaml`
 
-Provisions a fresh ephemeral Hypershift cluster per run via Konflux
-EaaS. No kubeconfig secrets, cluster locks, or OADP needed. The
-cluster is automatically destroyed when the PipelineRun completes.
+Provisions a fresh ephemeral HyperShift cluster per run through OpenShift CI.
+No kubeconfig secrets, cluster locks, or OADP are needed. OpenShift CI
+automatically destroys the cluster with its owning PipelineRun.
 
 ### Flow
 
 1. `parse-metadata` -- extract snapshot info
-2. `provision-eaas-space` -- allocate EaaS space
-3. `get-unreleased-bundle` -- get catalog bundle ref + resolve quay.io bundle
-4. `pick-cluster-params` -- FBC target minor, EaaS-supported version (with fallback), and bundle arch
-5. `build-image-content-sources` -- load `.tekton/images-mirror-set.yaml`
+2. `get-unreleased-bundle` -- get catalog bundle ref + resolve quay.io bundle
+3. `pick-cluster-params` -- select the OpenShift minor, worker architecture,
+   and matching AWS instance type from the FBC and bundle
+4. `build-image-content-sources` -- load `.tekton/images-mirror-set.yaml`
    (from `TEST_BUNDLE_REF` repo by default) → Hypershift `imageContentSources`
-6. `provision-cluster` -- create ephemeral cluster with those mirrors (HCCO
-   applies a managed IDMS; `registry.redhat.io` pulls redirect to quay.io)
-7. `deploy-and-test` -- fetches the test bundle, reads install config
+5. `provision-cluster` -- use OpenShift CI's
+   `hypershift-hostedcluster-workflow` with the `aws-konflux-prod` profile
+6. `deploy-and-test` -- fetches the test bundle, reads install config
    (`namespace`, `installMode`, `discoveryLabels`) from it, deploys the
    operator via OLM with the correct OperatorGroup, applies optional CSV
    patches, applies discovery labels to the CSV and workload pods,
@@ -38,7 +38,7 @@ cluster is automatically destroyed when the PipelineRun completes.
 Released operators on `registry.redhat.io` need no mirror set (skipped when the
 FBC is not on `quay.io/redhat-user-workloads`).
 
-### All EaaS Parameters
+### OpenShift CI Parameters
 
 | Parameter | Required | Default | Description |
 |-----------|----------|---------|-------------|
@@ -52,24 +52,19 @@ FBC is not on `quay.io/redhat-user-workloads`).
 | `PACKAGE_NAME` | No | auto-detected from FBC | Operator package name override |
 | `CHANNEL_NAME` | No | auto-detected from FBC | OLM channel override |
 | `PIPELINE_SCRIPTS_REF` | No | same repo/branch as pipeline | Git ref to pipeline scripts (advanced — used for testing pipeline changes from forks) |
+| `CLUSTER_PROFILE` | No | `aws-konflux-prod` | OpenShift CI cluster profile |
+| `HYPERSHIFT_NODE_COUNT` | No | `3` | Number of HyperShift worker nodes |
+| `HOSTED_MANAGEMENT_CLUSTER` | No | `hosted-mgmt2` | OpenShift CI hosted management cluster |
 
 ### Cluster version selection
 
 `OCP_RELEASE` is **not** a pipeline parameter and is **not** used to pick the
 cluster. Existing IntegrationTestScenarios that still pass it are ignored.
 
-1. **FBC target minor** — `get_ocp_version_from_fbc_fragment` on the snapshot
-   FBC image (`pick-cluster-params` / `record-fbc-ocp-version`). Stored as
-   result `fbcOcpVersion` (for example `4.22`).
-2. **Supported list** — `eaas-get-supported-ephemeral-cluster-versions`.
-3. **Fallback** — if the FBC target is not in that list and is **higher** than
-   the highest supported minor, use the highest supported minor; otherwise
-   no-op (empty `ocpVersion`). `pick-cluster-version` overwrites `ocpVersion`
-   with this fallback; `fbcOcpVersion` keeps the original FBC target.
-4. **Exact payload** — `eaas-get-latest-openshift-version-by-prefix` (latest
-   z-stream on `4-stable-multi` for that minor). Passed to Hypershift
-   `create-cluster` as `version` and recorded as `ocpVersionActual`
-   (for example `4.19.7`).
+`get_ocp_version_from_fbc_fragment` reads the target minor from the snapshot FBC
+image. The pipeline requests the stable, multi-architecture release for that
+minor from OpenShift CI. After provisioning, it reads the exact z-stream from
+the guest cluster for the `ocp-version-actual` results annotation.
 
 ### Registry Pull Secret (optional)
 
@@ -130,21 +125,21 @@ the external registry, and vice-versa.
 `<package>[-<ocp-release>]-<pr|merged>-<timestamp>`
 e.g. `openperouter-operator-4.22-pr-2026-08-12T18-30-01Z`
 
-`<ocp-release>` is the **FBC target minor** (before EaaS fallback), not a
-pipeline param. `<timestamp>` is a UTC ISO 8601 / RFC 3339 instant with `:`
+`<ocp-release>` is the **FBC target minor**, not a pipeline param. `<timestamp>`
+is a UTC ISO 8601 / RFC 3339 instant with `:`
 replaced by `-` (OCI tags cannot contain `:`).
 
 **OCI annotations** on every push:
 | Annotation | Source | Example |
 |------------|--------|---------|
 | `certsuite.redhat.com/trigger` | PipelineRun event-type | `pr` or `merged` |
-| `certsuite.redhat.com/ocp-release` | FBC target minor (before EaaS fallback) | `4.22` |
+| `certsuite.redhat.com/ocp-release` | FBC target minor | `4.22` |
 | `org.opencontainers.image.version` | Same as `ocp-release` | `4.22` |
-| `certsuite.redhat.com/ocp-version-actual` | Provisioned cluster (fallback + z-stream) | `4.19.7` |
+| `certsuite.redhat.com/ocp-version-actual` | Provisioned cluster z-stream | `4.22.17` |
 | `quay.expires-after` | `7d` for **PR** artifacts only (Quay GC) | `7d` |
 
-After a fallback run, `oras manifest fetch` shows `ocp-version-actual`
-different from `ocp-release`.
+`ocp-version-actual` includes the z-stream selected by OpenShift CI and therefore
+differs from the minor-only `ocp-release` value.
 
 The `pr`/`merged` segment is derived from
 `pac.test.appstudio.openshift.io/event-type` via `parse-metadata`.
@@ -195,5 +190,5 @@ namespace.
 ## Usage
 
 Create an `IntegrationTestScenario` in your tenants-config repo. See:
-- [EaaS example](../../../examples/integration-test-scenario-eaas.yaml) (recommended)
+- [OpenShift CI example](../../../examples/integration-test-scenario-openshift-ci.yaml) (recommended)
 - [Shared cluster example](../../../examples/integration-test-scenario.yaml)

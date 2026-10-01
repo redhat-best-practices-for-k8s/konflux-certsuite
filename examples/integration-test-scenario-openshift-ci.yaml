@@ -1,4 +1,4 @@
-# Example IntegrationTestScenario using the EaaS (ephemeral cluster) variant.
+# Example IntegrationTestScenario using the OpenShift CI ephemeral-cluster variant.
 # This is the recommended approach -- no kubeconfig secrets, OADP, or
 # cluster locks needed. Each run provisions a fresh Hypershift cluster.
 #
@@ -56,8 +56,16 @@ spec:
     #   value: "quay.io/<org>/certsuite-results"   # bare repo only (no :tag / @digest)
     # - name: OCI_RESULTS_SECRET
     #   value: "certsuite-results-push-secret"
+    # Optional OpenShift CI HyperShift overrides:
+    # - name: CLUSTER_PROFILE
+    #   value: "aws-konflux-prod"
+    # - name: HYPERSHIFT_NODE_COUNT
+    #   value: "3"
+    # - name: HOSTED_MANAGEMENT_CLUSTER
+    #   value: "hosted-mgmt2"
+    #
     # ocp-release (FBC target minor) and ocp-version-actual (provisioned
-    # cluster, including EaaS fallback + z-stream) are derived at runtime.
+    # cluster z-stream) are derived at runtime.
     # Existing ITS that still pass OCP_RELEASE are ignored.
   resolverRef:
     resolver: git
@@ -68,4 +76,4 @@ spec:
       - name: revision
         value: main
       - name: pathInRepo
-        value: pipelines/certsuite-operator-test/0.1/certsuite-operator-test-eaas.yaml
+        value: pipelines/certsuite-operator-test/0.1/certsuite-operator-test-openshift-ci.yaml

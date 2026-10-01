@@ -4,33 +4,32 @@ This document describes the Konflux Certsuite test pipelines, how
 clusters are provisioned or managed, and how results flow to storage.
 
 There are two pipeline variants:
-- **EaaS** (recommended) -- ephemeral cluster per run, no infrastructure to manage
+- **OpenShift CI** (recommended) -- ephemeral cluster per run, no infrastructure to manage
 - **Shared Cluster** -- persistent cluster with locking and OADP cleanup
 
-## EaaS Pipeline (Recommended)
+## OpenShift CI Pipeline (Recommended)
 
-Each run provisions a fresh Hypershift cluster via Konflux EaaS. No
-kubeconfig secrets, no locks, no cleanup -- the cluster is destroyed
-automatically when the PipelineRun completes.
+Each run provisions a fresh HyperShift cluster through OpenShift CI with the
+shared `aws-konflux-prod` profile. No kubeconfig secrets, locks, or explicit
+cleanup are needed; ownership of the cluster claim is attached to the
+PipelineRun.
 
 ```mermaid
 flowchart TD
-    A[parse-metadata] --> B[provision-eaas-space]
-    B --> C[get-unreleased-bundle]
+    A[parse-metadata] --> C[get-unreleased-bundle]
     C --> D[pick-cluster-params]
-    D --> E[provision-cluster]
-    E --> F["deploy-and-test\n(deploy operator + operands + run certsuite)"]
-    F --> G[collect-results]
+    D --> E[build-image-content-sources]
+    E --> F[provision-cluster]
+    F --> G["deploy-and-test\n(deploy operator + operands + run certsuite)"]
 ```
 
 | Stage | What it does |
 |-------|-------------|
-| `provision-eaas-space` | Allocates an EaaS space for cluster provisioning |
 | `get-unreleased-bundle` | Extracts the operator bundle from the FBC fragment |
-| `pick-cluster-params` | Reads FBC target minor; maps to a supported EaaS version (fallback if needed) and bundle arch |
-| `provision-cluster` | Resolves latest z-stream for that minor and creates an ephemeral Hypershift AWS cluster |
-| `deploy-and-test` | Gets kubeconfig, deploys operator via OLM, deploys operands from test bundle, runs certsuite |
-| `collect-results` | Optionally pushes claim.json to cert-track-results and/or OCI |
+| `pick-cluster-params` | Selects the OpenShift minor, worker architecture, and matching AWS instance type |
+| `build-image-content-sources` | Builds the HyperShift image mirror configuration |
+| `provision-cluster` | Runs `hypershift-hostedcluster-workflow` with `aws-konflux-prod` |
+| `deploy-and-test` | Mounts the returned kubeconfig Secret, deploys the operator and operands, runs certsuite, and optionally pushes results |
 
 ## Shared Cluster Pipeline
 
@@ -208,8 +207,8 @@ flowchart TD
 ### OCI Results Storage
 
 Results are pushed as OCI artifacts (via `oras`) with artifact type
-`application/vnd.certsuite.results.v1+gzip`. Two modes are supported
-(EaaS pipeline):
+`application/vnd.certsuite.results.v1+gzip`. Two modes are supported by the
+OpenShift CI pipeline:
 
 | Mode | Parameters | Tag format | Description |
 |------|-----------|------------|-------------|
@@ -248,9 +247,9 @@ For each `(operator, release)` pair:
    repository.
 2. Validate it locally with `tools/validate-test-bundle.sh`.
 3. Create an `IntegrationTestScenario` in your Konflux tenant config.
-   See [examples/integration-test-scenario-eaas.yaml](../examples/integration-test-scenario-eaas.yaml).
+   See [examples/integration-test-scenario-openshift-ci.yaml](../examples/integration-test-scenario-openshift-ci.yaml).
 4. Ensure the required Secrets exist in your tenant namespace:
-   - **EaaS (recommended):**
+   - **OpenShift CI (recommended):**
      - `REGISTRY_PULL_SECRET` -- `dockerconfigjson` Secret for
        `registry.redhat.io` (required for unreleased operators)
      - (optional) component ImageRepository push secret via `OCI_PUSH_SECRET`

@@ -26,7 +26,7 @@ spec:
       - kind: DaemonSet
 
   # Optional CSV patches applied after OLM creates the CSV and before
-  # waiting for Succeeded. These are required for HyperShift EaaS guests
+  # waiting for Succeeded. These are required for OpenShift CI HyperShift guests
   # (often older kube than the 4.22 bundle's minKubeVersion; no master nodes).
   csvPatches:
     - path: csv-patches/00-remove-min-kube-version.json

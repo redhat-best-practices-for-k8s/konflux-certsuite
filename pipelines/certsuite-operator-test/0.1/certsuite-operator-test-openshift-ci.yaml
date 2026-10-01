@@ -1,15 +1,16 @@
 apiVersion: tekton.dev/v1
 kind: Pipeline
 metadata:
-  name: certsuite-operator-test-eaas
+  name: certsuite-operator-test-openshift-ci
   labels:
     app.kubernetes.io/part-of: konflux-certsuite
     upstream-usable: "true"
 spec:
   description: |
-    Provisions an ephemeral EaaS Hypershift cluster, deploys an operator from
-    an FBC fragment, deploys operands from a test bundle, and runs certsuite.
-    The cluster is automatically destroyed when the PipelineRun completes.
+    Provisions an ephemeral HyperShift cluster through OpenShift CI, deploys
+    an operator from an FBC fragment, deploys operands from a test bundle, and
+    runs certsuite. The cluster is automatically destroyed with its owning
+    PipelineRun.
 
     This is the recommended variant for most operators. Use the shared-cluster
     variant (certsuite-operator-test.yaml) only when you need a persistent
@@ -38,6 +39,18 @@ spec:
     - name: CHANNEL_NAME
       type: string
       default: ""
+    - name: CLUSTER_PROFILE
+      type: string
+      default: "aws-konflux-prod"
+      description: OpenShift CI cluster profile used for provisioning.
+    - name: HYPERSHIFT_NODE_COUNT
+      type: string
+      default: "3"
+      description: Number of worker nodes for the ephemeral HyperShift cluster.
+    - name: HOSTED_MANAGEMENT_CLUSTER
+      type: string
+      default: "hosted-mgmt2"
+      description: OpenShift CI hosted management cluster used for provisioning.
     - name: IMAGES_MIRROR_SET_REF
       type: string
       default: ""
@@ -122,29 +135,10 @@ spec:
         - name: SNAPSHOT
           value: $(params.SNAPSHOT)
 
-    # ── 2. Provision EaaS Space ────────────────────────────────────────
-    - name: provision-eaas-space
-      runAfter:
-        - parse-metadata
-      taskRef:
-        resolver: git
-        params:
-          - name: url
-            value: https://github.com/konflux-ci/build-definitions.git
-          - name: revision
-            value: main
-          - name: pathInRepo
-            value: task/eaas-provision-space/0.1/eaas-provision-space.yaml
-      params:
-        - name: ownerName
-          value: $(context.pipelineRun.name)
-        - name: ownerUid
-          value: $(context.pipelineRun.uid)
-
-    # ── 3. Get Unreleased Bundle from FBC ──────────────────────────────
+    # ── 3. Get Unreleased Bundle from FBC ───────────────────────────────
     - name: get-unreleased-bundle
       runAfter:
-        - provision-eaas-space
+        - parse-metadata
       params:
         - name: registryPullSecret
           value: $(params.REGISTRY_PULL_SECRET)
@@ -407,7 +401,7 @@ spec:
               echo -n "$(cat "${META_DIR}/packageName")" > "${RESULT_PACKAGE_NAME}"
               echo -n "$(cat "${META_DIR}/channelName")" > "${RESULT_CHANNEL_NAME}"
 
-    # ── 4. Pick Cluster Params ─────────────────────────────────────────
+    # ── 4. Pick Cluster Params ────────────────────────────────────────
     - name: pick-cluster-params
       runAfter:
         - get-unreleased-bundle
@@ -417,59 +411,16 @@ spec:
           values: [""]
       taskSpec:
         results:
-          # Original FBC target minor (before EaaS fallback). Written by the
-          # inline record-fbc-ocp-version step so it is not overwritten when
-          # pick-cluster-version falls back to the highest supported minor.
-          - name: fbcOcpVersion
-            description: Target OCP minor from the FBC fragment (before EaaS fallback)
           - name: ocpVersion
             value: "$(steps.pick-cluster-version.results.ocpVersion)"
-          - name: bundleArch
-            value: "$(steps.pick-cluster-arch.results.bundleArch)"
+            description: OpenShift minor requested from OpenShift CI
+          - name: arch
+            value: "$(steps.pick-cluster-arch.results.arch)"
+            description: Worker node architecture required by the bundle
+          - name: awsInstanceType
+            value: "$(steps.pick-cluster-arch.results.awsInstanceType)"
+            description: AWS worker instance type selected for the architecture
         steps:
-          # Capture the FBC target independently of pick-cluster-version,
-          # which overwrites ocpVersion with the EaaS fallback minor.
-          # Same image as pick-cluster-version (provides /utils.sh).
-          - name: record-fbc-ocp-version
-            image: quay.io/redhat-appstudio/konflux-test:v1.4.18@sha256:78c76869d0b171e9bfa5e931e5e6ecbe92b32f61c6ec627c57cbb9d1aad75aab
-            env:
-              - name: FBC_FRAGMENT
-                value: "$(tasks.parse-metadata.results.component-container-image)"
-              - name: RESULT_FBC_OCP_VERSION
-                value: $(results.fbcOcpVersion.path)
-            script: |
-              #!/usr/bin/env bash
-              set -euo pipefail
-              . /utils.sh
-
-              if [ -z "${FBC_FRAGMENT}" ]; then
-                echo "ERROR: fbcFragment is empty" >&2
-                exit 1
-              fi
-
-              # Backticks: Tekton treats dollar-paren substitution in inlined
-              # pipelineSpec as a variable reference.
-              if ! ocp_version=`get_ocp_version_from_fbc_fragment "${FBC_FRAGMENT}"`; then
-                echo "ERROR: Failed to determine target OCP version from FBC fragment." >&2
-                exit 1
-              fi
-
-              ocp_version="${ocp_version#v}"
-              echo "FBC target OCP version: ${ocp_version}"
-              echo -n "${ocp_version}" > "${RESULT_FBC_OCP_VERSION}"
-          - name: get-supported-versions
-            ref:
-              resolver: git
-              params:
-                - name: url
-                  value: https://github.com/konflux-ci/build-definitions.git
-                - name: revision
-                  value: main
-                - name: pathInRepo
-                  value: stepactions/eaas-get-supported-ephemeral-cluster-versions/0.1/eaas-get-supported-ephemeral-cluster-versions.yaml
-            params:
-              - name: eaasSpaceSecretRef
-                value: "$(tasks.provision-eaas-space.results.secretRef)"
           - name: pick-cluster-version
             ref:
               resolver: git
@@ -479,12 +430,10 @@ spec:
                 - name: revision
                   value: main
                 - name: pathInRepo
-                  value: stepactions/bundles/pick-cluster-version/0.1/pick-cluster-version.yaml
+                  value: stepactions/bundles/pick-cluster-version/0.2/pick-cluster-version.yaml
             params:
               - name: fbcFragment
                 value: "$(tasks.parse-metadata.results.component-container-image)"
-              - name: clusterVersions
-                value: ["$(steps.get-supported-versions.results.versions[*])"]
           - name: pick-cluster-arch
             ref:
               resolver: git
@@ -494,7 +443,7 @@ spec:
                 - name: revision
                   value: main
                 - name: pathInRepo
-                  value: stepactions/bundles/pick-cluster-arch/0.1/pick-cluster-arch.yaml
+                  value: stepactions/bundles/pick-cluster-arch/0.2/pick-cluster-arch.yaml
             params:
               # Must be a pullable operator bundle (quay.io for unreleased).
               # Catalog refs on registry.redhat.io return 401 for pre-release digests.
@@ -528,7 +477,7 @@ spec:
             type: string
         results:
           - name: imageContentSources
-            description: Hypershift imageContentSources YAML (empty if none)
+            description: JSON string containing Hypershift imageContentSources YAML
         steps:
           - name: build
             image: quay.io/konflux-ci/task-runner:1.5.0@sha256:200019314a50be5b6dd06f362c794c92a700583a522c5eee9a41e3eab7f706c5
@@ -547,9 +496,8 @@ spec:
               ICS_OUT="/tmp/image-content-sources.yaml"
               : > "${ICS_OUT}"
               RESULT_PATH=$(results.imageContentSources.path)
-
               finish() {
-                cat "${ICS_OUT}" > "${RESULT_PATH}"
+                jq -Rs . "${ICS_OUT}" > "${RESULT_PATH}"
               }
               trap finish EXIT
 
@@ -674,52 +622,37 @@ spec:
           operator: notin
           values: [""]
       params:
-        - name: imageContentSources
-          value: "$(tasks.build-image-content-sources.results.imageContentSources)"
-      taskSpec:
+        - name: ownerName
+          value: $(context.pipelineRun.name)
+        - name: ownerUid
+          value: $(context.pipelineRun.uid)
+        - name: workflow
+          value: hypershift-hostedcluster-workflow
+        - name: clusterProfile
+          value: $(params.CLUSTER_PROFILE)
+        - name: timeout
+          value: 1h
+        - name: releases
+          value: >-
+            {"latest":{"release":{"channel":"stable","version":"$(tasks.pick-cluster-params.results.ocpVersion)","architecture":"multi"}}}
+        - name: env
+          value: |
+            {
+              "COMPUTE_NODE_TYPE": "$(tasks.pick-cluster-params.results.awsInstanceType)",
+              "HYPERSHIFT_NODE_ARCH": "$(tasks.pick-cluster-params.results.arch)",
+              "HYPERSHIFT_NODE_COUNT": "$(params.HYPERSHIFT_NODE_COUNT)",
+              "HOSTED_MANAGEMENT_CLUSTER": "$(params.HOSTED_MANAGEMENT_CLUSTER)",
+              "IMAGE_CONTENT_SOURCES": $(tasks.build-image-content-sources.results.imageContentSources)
+            }
+      taskRef:
+        resolver: git
         params:
-          - name: imageContentSources
-            type: string
-        results:
-          - name: clusterName
-            value: "$(steps.create-cluster.results.clusterName)"
-          - name: ocpVersionActual
-            description: Exact OpenShift version provisioned (latest z-stream for the selected minor)
-            value: "$(steps.get-latest-version-tag.results.version)"
-        steps:
-          - name: get-latest-version-tag
-            ref:
-              resolver: git
-              params:
-                - name: url
-                  value: https://github.com/konflux-ci/build-definitions.git
-                - name: revision
-                  value: main
-                - name: pathInRepo
-                  value: stepactions/eaas-get-latest-openshift-version-by-prefix/0.1/eaas-get-latest-openshift-version-by-prefix.yaml
-            params:
-              - name: prefix
-                value: "$(tasks.pick-cluster-params.results.ocpVersion)"
-
-          - name: create-cluster
-            ref:
-              resolver: git
-              params:
-                - name: url
-                  value: https://github.com/konflux-ci/build-definitions.git
-                - name: revision
-                  value: main
-                - name: pathInRepo
-                  value: stepactions/eaas-create-ephemeral-cluster-hypershift-aws/0.1/eaas-create-ephemeral-cluster-hypershift-aws.yaml
-            params:
-              - name: eaasSpaceSecretRef
-                value: $(tasks.provision-eaas-space.results.secretRef)
-              - name: version
-                value: "$(steps.get-latest-version-tag.results.version)"
-              - name: instanceType
-                value: "$(tasks.pick-cluster-params.results.bundleArch)"
-              - name: imageContentSources
-                value: "$(params.imageContentSources)"
+          - name: url
+            value: https://github.com/openshift/konflux-tasks
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: tasks/provision-ephemeral-cluster/0.1/provision-ephemeral-cluster.yaml
 
     # ── 7. Deploy Operator + Operands + Run Certsuite ──────────────────
     - name: deploy-and-test
@@ -730,10 +663,8 @@ spec:
           operator: notin
           values: [""]
       params:
-        - name: eaasSpaceSecretRef
-          value: $(tasks.provision-eaas-space.results.secretRef)
-        - name: clusterName
-          value: "$(tasks.provision-cluster.results.clusterName)"
+        - name: clusterCredentialsSecretRef
+          value: $(tasks.provision-cluster.results.secretRef)
         - name: fbcFragment
           value: "$(tasks.parse-metadata.results.component-container-image)"
         - name: bundleImage
@@ -756,15 +687,11 @@ spec:
           value: $(params.PIPELINE_SCRIPTS_REF)
         - name: testEventType
           value: $(tasks.parse-metadata.results.test-event-type)
-        - name: fbcOcpVersion
-          value: "$(tasks.pick-cluster-params.results.fbcOcpVersion)"
-        - name: ocpVersionActual
-          value: "$(tasks.provision-cluster.results.ocpVersionActual)"
+        - name: ocpVersion
+          value: "$(tasks.pick-cluster-params.results.ocpVersion)"
       taskSpec:
         params:
-          - name: eaasSpaceSecretRef
-            type: string
-          - name: clusterName
+          - name: clusterCredentialsSecretRef
             type: string
           - name: fbcFragment
             type: string
@@ -789,17 +716,14 @@ spec:
           - name: testEventType
             type: string
             default: ""
-          - name: fbcOcpVersion
+          - name: ocpVersion
             type: string
             default: ""
-            description: Target OCP minor from the FBC fragment (before EaaS fallback)
-          - name: ocpVersionActual
-            type: string
-            default: ""
-            description: Exact OpenShift version of the provisioned EaaS cluster
+            description: Target OCP minor from the FBC fragment
         volumes:
           - name: credentials
-            emptyDir: {}
+            secret:
+              secretName: $(params.clusterCredentialsSecretRef)
           - name: oci-push-creds
             secret:
               secretName: $(params.ociPushSecret)
@@ -809,26 +733,7 @@ spec:
               secretName: $(params.ociResultsSecret)
               optional: true
         steps:
-          # ── Step 1: Get kubeconfig from EaaS ─────────────────────────
-          - name: get-kubeconfig
-            ref:
-              resolver: git
-              params:
-                - name: url
-                  value: https://github.com/konflux-ci/build-definitions.git
-                - name: revision
-                  value: main
-                - name: pathInRepo
-                  value: stepactions/eaas-get-ephemeral-cluster-credentials/0.1/eaas-get-ephemeral-cluster-credentials.yaml
-            params:
-              - name: eaasSpaceSecretRef
-                value: $(params.eaasSpaceSecretRef)
-              - name: clusterName
-                value: $(params.clusterName)
-              - name: credentials
-                value: credentials
-
-          # ── Step 2: Fetch test bundle ─────────────────────────────────
+          # ── Step 1: Fetch test bundle ────────────────────────────────
           - name: fetch-test-bundle
             image: quay.io/konflux-ci/konflux-test:v1.4.31@sha256:a7cae9e96663e277a3904d0c78630508ddb6cc8eebaa912a840bd20f68dcaad1
             env:
@@ -896,7 +801,7 @@ spec:
               chmod +x "${SCRIPTS_DIR}"/*.sh; rm -rf "${TMP}"
               echo "[$(date -u +%FT%T.%3NZ)] Helper scripts installed"
 
-          # ── Step 3: Deploy operator via OLM ──────────────────────────
+          # ── Step 2: Deploy operator via OLM ──────────────────────────
           - name: deploy-operator
             image: quay.io/konflux-ci/konflux-test:v1.4.31@sha256:a7cae9e96663e277a3904d0c78630508ddb6cc8eebaa912a840bd20f68dcaad1
             onError: continue
@@ -911,7 +816,7 @@ spec:
                 mountPath: /credentials
             env:
               - name: KUBECONFIG
-                value: "/credentials/$(steps.get-kubeconfig.results.kubeconfig)"
+                value: /credentials/kubeconfig
               - name: FBC_FRAGMENT
                 value: "$(params.fbcFragment)"
               - name: BUNDLE_IMAGE
@@ -928,6 +833,8 @@ spec:
 
               echo "[$(date -u +%FT%T.%3NZ)] Deploying operator: package=${PACKAGE_NAME} channel=${CHANNEL_NAME}"
               oc whoami || { echo "ERROR: Cannot connect to cluster"; exit 1; }
+              oc get clusterversion version -o jsonpath='{.status.desired.version}' > /workspace/ocp-version-actual
+              echo "[$(date -u +%FT%T.%3NZ)] OpenShift version: `cat /workspace/ocp-version-actual`"
 
               # ── Wait for at least one worker node to be Ready ──────────────
               echo "[$(date -u +%FT%T.%3NZ)] Waiting for worker nodes..."
@@ -1286,7 +1193,7 @@ spec:
               oc get events -n "${INSTALL_NAMESPACE}" --sort-by='.lastTimestamp' | tail -40 >&2 || true
               exit 1
 
-          # ── Step 4: Deploy operands from test bundle ─────────────────
+          # ── Step 3: Deploy operands from test bundle ─────────────────
           - name: deploy-operands
             image: quay.io/konflux-ci/konflux-test:v1.4.31@sha256:a7cae9e96663e277a3904d0c78630508ddb6cc8eebaa912a840bd20f68dcaad1
             volumeMounts:
@@ -1294,7 +1201,7 @@ spec:
                 mountPath: /credentials
             env:
               - name: KUBECONFIG
-                value: "/credentials/$(steps.get-kubeconfig.results.kubeconfig)"
+                value: /credentials/kubeconfig
             script: |
               #!/usr/bin/env bash
               set -euo pipefail
@@ -1328,7 +1235,7 @@ spec:
 
               echo "[$(date -u +%FT%T.%3NZ)] Operand deployment complete"
 
-          # ── Step 5: Run certsuite ────────────────────────────────────
+          # ── Step 4: Run certsuite ────────────────────────────────────
           - name: run-certsuite
             image: quay.io/redhat-best-practices-for-k8s/certsuite:latest
             onError: continue
@@ -1343,14 +1250,14 @@ spec:
                 mountPath: /credentials
             env:
               - name: KUBECONFIG
-                value: "/credentials/$(steps.get-kubeconfig.results.kubeconfig)"
+                value: /credentials/kubeconfig
               - name: CERTSUITE_LABELS
                 value: "$(params.certsuiteLabels)"
             script: |
               #!/usr/bin/env bash
               set -euo pipefail
 
-              # Disable in-cluster config so client-go uses the EaaS kubeconfig
+              # Disable in-cluster config so client-go uses the guest kubeconfig
               # instead of the Tekton pod's SA token
               unset KUBERNETES_SERVICE_HOST KUBERNETES_SERVICE_PORT
               mkdir -p ~/.kube
@@ -1424,14 +1331,13 @@ spec:
               - name: TEST_EVENT_TYPE
                 value: "$(params.testEventType)"
               - name: OCP_RELEASE
-                value: "$(params.fbcOcpVersion)"
-              - name: OCP_VERSION_ACTUAL
-                value: "$(params.ocpVersionActual)"
+                value: "$(params.ocpVersion)"
             script: |
               #!/bin/sh
               set -eu
 
               RESULTS_DIR="/workspace/results"
+              OCP_VERSION_ACTUAL=`cat /workspace/ocp-version-actual`
               if [ ! -d "${RESULTS_DIR}" ] || ! ls "${RESULTS_DIR}"/*/claim.json >/dev/null 2>&1; then
                 echo "No certsuite results found. Skipping OCI push."
                 exit 0
@@ -1561,9 +1467,9 @@ spec:
     #      tagged <pr|merged>-<timestamp>, or
     #   b) an external repo (OCI_RESULTS_REPO + OCI_RESULTS_SECRET),
     #      tagged <package>[-<ocp-release>]-<pr|merged>-<timestamp>
-    #      where ocp-release is the FBC target minor (not the EaaS fallback).
+    #      where ocp-release is the FBC target minor.
     # Annotations: certsuite.redhat.com/trigger, ocp-release (FBC target),
-    # ocp-version-actual (provisioned cluster, includes fallback + z-stream),
+    # ocp-version-actual (provisioned cluster z-stream),
     # org.opencontainers.image.version (FBC target); quay.expires-after=7d
     # for PR artifacts.
     # Download with: oras pull <OCI_REF printed in push-results logs>
