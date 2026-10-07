@@ -333,7 +333,7 @@ with placeholder manifests that you can customize.
 
 ## Step 7: Onboard to Konflux
 
-### Option A: EaaS (Recommended)
+### Option A: OpenShift CI (Recommended)
 
 No kubeconfig, locks, or OADP to manage. Each run gets a fresh cluster.
 OCI results push is optional and needs a registry Secret only if you enable it.
@@ -356,10 +356,10 @@ OCI results push is optional and needs a registry Secret only if you enable it.
 
 3. **Create an IntegrationTestScenario.** Three ways:
    - **Konflux UI** — go to your Application → Integration tests → Add
-   - **CLI** — `oc apply -f integration-test-scenario-eaas.yaml -n <tenant-namespace>`
+   - **CLI** — `oc apply -f integration-test-scenario-openshift-ci.yaml -n <tenant-namespace>`
    - **GitOps** — add the YAML to your tenants-config repository
 
-   See [examples/integration-test-scenario-eaas.yaml](../examples/integration-test-scenario-eaas.yaml).
+   See [examples/integration-test-scenario-openshift-ci.yaml](../examples/integration-test-scenario-openshift-ci.yaml).
 
    Typical parameters for unreleased operators:
    ```yaml
@@ -380,7 +380,7 @@ OCI results push is optional and needs a registry Secret only if you enable it.
        - name: revision
          value: main
        - name: pathInRepo
-         value: pipelines/certsuite-operator-test/0.1/certsuite-operator-test-eaas.yaml
+         value: pipelines/certsuite-operator-test/0.1/certsuite-operator-test-openshift-ci.yaml
    ```
 
 4. **(Optional) Configure OCI results storage.** By default, results can be
@@ -404,7 +404,7 @@ OCI results push is optional and needs a registry Secret only if you enable it.
      - name: OCI_RESULTS_SECRET
        value: "certsuite-results-push-secret"
      # ocp-release / ocp-version-actual are derived at runtime from the FBC
-     # fragment and the provisioned EaaS cluster; do not pass OCP_RELEASE.
+     # fragment and the provisioned OpenShift CI cluster; do not pass OCP_RELEASE.
    ```
 
    See [OCI Results Storage](../pipelines/certsuite-operator-test/0.1/README.md#oci-results-storage)
@@ -446,7 +446,8 @@ Use when you need a persistent cluster (e.g. hardware tests).
 
 Unreleased operators publish images to internal registries (e.g.
 `registry-proxy.engineering.redhat.com`) that are not reachable from the
-EaaS cluster. The pipeline handles this transparently using
+ephemeral cluster. The pipeline passes the required mirrors to OpenShift CI
+using
 `images-mirror-set.yaml`:
 
 1. Place `.tekton/images-mirror-set.yaml` in the same git repository and
@@ -477,7 +478,7 @@ By default the pipeline runs the `common` test suite. Use the
 `CERTSUITE_LABELS` parameter to select different test categories:
 
 > **Warning:** Never set `CERTSUITE_LABELS` to an empty string (`""`) for
-> the EaaS pipeline. Unlike some other certsuite integrations, the EaaS
+> the OpenShift CI pipeline. Unlike some other certsuite integrations, this
 > pipeline passes an empty value straight through to `certsuite run
 > --label-filter ""`, which puts certsuite into **diagnostic mode and
 > launches zero test cases** -- silently, with no pipeline failure. Simply
@@ -525,9 +526,9 @@ demonstrates a real-world bundle:
 | "certsuite-test-bundle.yaml not found" | Wrong `TEST_BUNDLE_REF` path | Check the `#path` fragment in the ref |
 | "certsuite_config.yml not found" | Missing config in test bundle | Add `certsuite_config.yml` to the bundle root (see Step 3) |
 | `get-unreleased-bundle` auth error | Missing or wrong pull secret | Create a `dockerconfigjson` Secret for `registry.redhat.io` and set `REGISTRY_PULL_SECRET` |
-| ImagePullBackOff in EaaS cluster | Unreleased images not mirrored | Add `.tekton/images-mirror-set.yaml` (see Image Mirroring section) |
+| ImagePullBackOff in ephemeral cluster | Unreleased images not mirrored | Add `.tekton/images-mirror-set.yaml` (see Image Mirroring section) |
 | Operands never become Ready | Missing dependencies or bad config | Test locally first (Step 5: Validate Locally) |
-| EaaS cluster provision timeout | MCE/Hypershift issue | Check Konflux status; retry |
+| OpenShift CI cluster provision timeout | OpenShift CI/HyperShift issue | Follow the ProwJob link in the task log; retry |
 | Lock timeout (shared cluster only) | Another pipeline is running | Increase `LOCK_TIMEOUT` or wait |
 | OADP restore fails (shared cluster only) | Backup expired or missing | Recreate the baseline backup |
 

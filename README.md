@@ -7,12 +7,12 @@ operator from an FBC (File-Based Catalog) fragment, runs the
 
 ## Two Pipeline Variants
 
-### EaaS (Recommended)
+### OpenShift CI (Recommended)
 
-`certsuite-operator-test-eaas.yaml` -- provisions a fresh ephemeral
-Hypershift cluster per run via Konflux EaaS. No kubeconfig secrets, no
-cluster locks, no OADP. The cluster is automatically destroyed when the
-run completes.
+`certsuite-operator-test-openshift-ci.yaml` -- provisions a fresh ephemeral
+HyperShift cluster per run through OpenShift CI using the shared
+`aws-konflux-prod` cluster profile. No kubeconfig secrets, cluster locks, or
+OADP are required.
 
 ### Shared Cluster
 
@@ -28,7 +28,7 @@ infrastructure (e.g. hardware-dependent tests).
   without hardware or license dependencies.
 - **All tests by default** -- runs the full certsuite suite unless
   `CERTSUITE_LABELS` specifies a subset.
-- **OCI results storage (EaaS)** -- claim/results are pushed as an OCI
+- **OCI results storage (OpenShift CI)** -- claim/results are pushed as an OCI
   artifact via `oras`, either to the component Quay repo
   (`OCI_PUSH_SECRET`) or to a dedicated external registry
   (`OCI_RESULTS_REPO` + `OCI_RESULTS_SECRET`).
@@ -54,7 +54,7 @@ docs/               Architecture and onboarding documentation
 examples/           Example IntegrationTestScenario, OADP backup, test bundle
 ```
 
-## EaaS Pipeline Parameters
+## OpenShift CI Pipeline Parameters
 
 | Parameter | Required | Default | Description |
 |-----------|----------|---------|-------------|
@@ -68,6 +68,9 @@ examples/           Example IntegrationTestScenario, OADP backup, test bundle
 | `OCI_RESULTS_REPO` | no | `""` | Bare external OCI repo (no tag/digest). When set, results go here instead of the component repo |
 | `OCI_RESULTS_SECRET` | no* | placeholder | `dockerconfigjson` Secret with push access to `OCI_RESULTS_REPO` (*required when that repo is set) |
 | `REGISTRY_PULL_SECRET` | no | placeholder | `dockerconfigjson` Secret merged with SA auth for `get-unreleased-bundle` (e.g. `registry.redhat.io`) |
+| `CLUSTER_PROFILE` | no | `aws-konflux-prod` | OpenShift CI cluster profile |
+| `HYPERSHIFT_NODE_COUNT` | no | `3` | Number of HyperShift worker nodes |
+| `HOSTED_MANAGEMENT_CLUSTER` | no | `hosted-mgmt2` | OpenShift CI hosted management cluster |
 See [OCI Results Storage](pipelines/certsuite-operator-test/0.1/README.md#oci-results-storage) for setup and download instructions.
 
 ## Shared Cluster Pipeline Parameters
